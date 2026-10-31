@@ -1,0 +1,29 @@
+{
+  "name": "tidings",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Tidings — fast, keyboard-first, open-source webmail for any IMAP server.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c blue,magenta \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
+    "build": "npm run build -w apps/web && npm run build -w apps/server",
+    "start": "npm run start -w apps/server",
+    "typecheck": "npm run typecheck -w apps/server && npm run typecheck -w apps/web",
+    "test": "npm run test -w apps/server",
+    "mail:start": "bash dev/mailserver/start.sh",
+    "mail:stop": "bash dev/mailserver/stop.sh",
+    "mail:seed": "node dev/mailserver/seed.mjs",
+    "mail:reset": "bash dev/mailserver/reset.sh"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "smtp-server": "^3.21.3"
+  }
+}

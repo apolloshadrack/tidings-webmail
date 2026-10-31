@@ -1,0 +1,4 @@
+# Dev-only accounts for the local Tidings mail stack. Password for all: tidings-dev
+alice@tidings.test:{PLAIN}tidings-dev::::::
+bob@tidings.test:{PLAIN}tidings-dev::::::
+carol@tidings.test:{PLAIN}tidings-dev::::::
