@@ -51,7 +51,12 @@ function applyFlagsLocally(db: DB, userKey: string, t: Target, add: string[], re
 const SAFE_FLAG = /^(\\(Seen|Flagged|Answered|Draft|Deleted)|\$?[A-Za-z0-9_.-]{1,64})$/;
 
 export async function setFlags(acc: Account, db: DB, t: Target, add: string[], remove: string[]) {
-  for (const f of [...add, ...remove]) if (!SAFE_FLAG.test(f)) throw new Error(`invalid flag ${f}`);
+  for (const f of [...add, ...remove]) if (!SAFE_FLAG.test(f)) throw Object.assign(new Error(`Invalid flag ${f}`), { statusCode: 400 });
+  if (add.includes('\\Deleted') || remove.includes('\\Deleted')) {
+    // \Deleted only via the guarded delete paths; a stray flag lets any other client destroy mail.
+    const role = (db.prepare('SELECT special_use FROM mailboxes WHERE user_key = ? AND path = ?').get(acc.userKey, t.mailbox) as { special_use: string | null } | undefined)?.special_use;
+    if (!['\\Trash', '\\Junk', '\\Drafts'].includes(role ?? '')) throw Object.assign(new Error('The deleted flag can only be changed in Trash, Spam or Drafts'), { statusCode: 400 });
+  }
   if (!t.uids.length) return;
   await acc.run(
     (client) =>

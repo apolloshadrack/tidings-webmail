@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, ArrowRight, Copy, ExternalLink, Folder, FolderPlus, Search, X, Clock, Sunrise, Sunset, CalendarDays, CalendarClock, Coffee } from 'lucide-react';
 import { api, qs } from '../api/client';
-import type { Mailbox } from '../api/types';
-import { moveTo, snooze } from '../lib/actions';
+import type { ListItem, Mailbox } from '../api/types';
+import { actionItems, moveTo, snooze } from '../lib/actions';
 import { type Command, describeKey, getCommands } from '../lib/keys';
 import { queryClient, useMailboxes } from '../state/queries';
 import { useUi } from '../state/ui';
-import { SettingsDialog } from './settings/SettingsDialog';
+const SettingsDialog = lazy(() => import('./settings/SettingsDialog').then((m) => ({ default: m.SettingsDialog })));
 
 export function DialogHost() {
   const dialog = useUi((s) => s.dialog);
@@ -25,15 +25,17 @@ export function DialogHost() {
     case 'settings':
       return (
         <div className="scrim center" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-          <SettingsDialog tab={dialog.tab} onClose={close} />
+          <Suspense fallback={null}>
+            <SettingsDialog tab={dialog.tab} onClose={close} />
+          </Suspense>
         </div>
       );
     case 'palette':
       return <Palette onClose={close} />;
     case 'move':
-      return <MovePicker onClose={close} />;
+      return <MovePicker onClose={close} items={dialog.items} />;
     case 'snooze':
-      return <SnoozePicker onClose={close} />;
+      return <SnoozePicker onClose={close} items={dialog.items} />;
     case 'help':
       return <Help onClose={close} />;
     case 'confirm':
@@ -44,7 +46,7 @@ export function DialogHost() {
             <button className="btn" onClick={close}>Cancel</button>
             <button
               className={`btn ${dialog.danger ? 'danger' : 'primary'}`}
-              autoFocus
+              data-autofocus={dialog.danger ? undefined : ''}
               onClick={() => {
                 close();
                 void dialog.run();
@@ -68,20 +70,60 @@ export function DialogHost() {
   }
 }
 
+/** Focus management shared by every modal: initial focus, Tab trap, Escape from anywhere, focus return. */
+export function useModalFocus(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    const el = ref.current;
+    const focusables = () =>
+      [...(el?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select, textarea, [href], [tabindex]:not([tabindex="-1"])') ?? [])].filter((x) => x.offsetParent !== null);
+    // Prefer an explicit autofocus, then the least destructive button.
+    const auto = el?.querySelector<HTMLElement>('[autofocus], [data-autofocus]');
+    const safe = focusables().find((b) => /^(cancel|not now|close)$/i.test(b.textContent?.trim() || b.getAttribute('aria-label') || ''));
+    (auto ?? safe ?? focusables()[0] ?? el)?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      } else if (e.key === 'Tab') {
+        const f = focusables();
+        if (!f.length) return;
+        const i = f.indexOf(document.activeElement as HTMLElement);
+        if (e.shiftKey && (i <= 0 || i === -1)) {
+          e.preventDefault();
+          f[f.length - 1].focus();
+        } else if (!e.shiftKey && (i === f.length - 1 || i === -1)) {
+          e.preventDefault();
+          f[0].focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    // Iframes (message bodies) swallow window key events; listen there too.
+    const frames = [...document.querySelectorAll('iframe')].map((f) => f.contentDocument).filter(Boolean) as Document[];
+    frames.forEach((d) => d.addEventListener('keydown', onKey, true));
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      frames.forEach((d) => d.removeEventListener('keydown', onKey, true));
+      if (prev && document.contains(prev) && prev.tagName !== 'IFRAME') prev.focus?.();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalFocus(ref, onClose);
   return (
     <div className="scrim center" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
+        ref={ref}
+        tabIndex={-1}
         className={`dialog${wide ? ' wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            e.stopPropagation();
-            onClose();
-          } else e.stopPropagation();
-        }}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="dialog-head">
           <h2>{title}</h2>
@@ -266,7 +308,7 @@ function Palette({ onClose }: { onClose: () => void }) {
   );
 }
 
-function MovePicker({ onClose }: { onClose: () => void }) {
+function MovePicker({ onClose, items }: { onClose: () => void; items?: ListItem[] }) {
   const { data: boxes = [] } = useMailboxes();
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
@@ -291,7 +333,7 @@ function MovePicker({ onClose }: { onClose: () => void }) {
         const r = await api<{ path: string }>('/api/mailboxes', { body: { name: q.trim() } });
         await queryClient.invalidateQueries({ queryKey: ['mailboxes'] });
         rememberFolder(r.path);
-        void moveTo(r.path);
+        void moveTo(r.path, items ?? actionItems());
       } catch (err) {
         useUi.getState().pushToast({ message: (err as Error).message, tone: 'error' });
       }
@@ -300,7 +342,7 @@ function MovePicker({ onClose }: { onClose: () => void }) {
     const b = options[i];
     if (!b) return;
     rememberFolder(b.path);
-    void moveTo(b.path);
+    void moveTo(b.path, items ?? actionItems());
   }
 
   return (
@@ -375,13 +417,14 @@ function snoozeOptions(now = new Date()) {
   return opts;
 }
 
-function SnoozePicker({ onClose }: { onClose: () => void }) {
+function SnoozePicker({ onClose, items }: { onClose: () => void; items?: ListItem[] }) {
   const opts = snoozeOptions();
   const [custom, setCustom] = useState('');
   const fmt = (d: Date) => d.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
   const pick = (d: Date) => {
+    const target = items ?? actionItems();
     onClose();
-    void snooze(d.getTime());
+    void snooze(d.getTime(), target);
   };
   return (
     <Modal title="Snooze until…" onClose={onClose}>
@@ -496,7 +539,7 @@ function LinkDialog({ href, text, mismatch, onClose }: { href: string; text: str
         <button className="btn" onClick={onClose}>Cancel</button>
         <button
           className={`btn ${mismatch ? 'danger' : 'primary'}`}
-          autoFocus={!mismatch}
+          data-autofocus={mismatch ? undefined : ''}
           onClick={() => {
             window.open(href, '_blank', 'noopener,noreferrer');
             onClose();

@@ -114,7 +114,7 @@ export function Horizon({ compact = false }: { compact?: boolean }) {
       <path d="M0 380 C120 330 210 350 300 372 S470 330 560 352 690 392 800 360 V600 H0Z" fill="color-mix(in oklab, var(--accent) 22%, var(--surface))" />
       <path d="M0 430 C140 398 250 420 360 440 S560 406 660 428 760 452 800 440 V600 H0Z" fill="color-mix(in oklab, var(--accent) 34%, var(--surface))" />
       <path d="M0 492 C160 470 300 488 420 500 S640 476 800 494 V600 H0Z" fill="color-mix(in oklab, var(--accent) 52%, var(--surface))" />
-      <g stroke="var(--surface)" strokeWidth="2.5" strokeLinecap="round" opacity=".7" fill="none">
+      <g stroke="var(--text-3)" strokeWidth="2.5" strokeLinecap="round" opacity=".55" fill="none">
         <path d="M236 210 q10 -8 20 0 q10 -8 20 0" />
         <path d="M300 182 q7 -6 14 0 q7 -6 14 0" />
       </g>

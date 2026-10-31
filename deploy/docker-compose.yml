@@ -1,0 +1,23 @@
+# Tidings in front of an existing mail server.
+# 1. cp .env.example .env and fill it in (TIDINGS_SECRET: `openssl rand -base64 48`)
+# 2. docker compose -f deploy/docker-compose.yml up -d
+services:
+  tidings:
+    image: ghcr.io/apolloshadrack/tidings-webmail:latest
+    # build: ..            # or build from source
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      TIDINGS_DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8080:8080"   # put a TLS reverse proxy in front (see docs/DEPLOYMENT.md)
+    volumes:
+      - tidings-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+volumes:
+  tidings-data:

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef } from 'react';
 import { PenLine } from 'lucide-react';
 import type { ComposeState, ServerConfig, SessionInfo } from '../api/types';
 import { installCommands } from '../lib/commands';
@@ -9,7 +9,6 @@ import { startRouter } from '../lib/router';
 import { useMailboxes } from '../state/queries';
 import { useSettings } from '../state/settings';
 import { useUi } from '../state/ui';
-import { ComposerDock } from './Composer';
 import { DialogHost } from './Dialogs';
 import { MessageList } from './MessageList';
 import { Reader } from './Reader';
@@ -20,9 +19,12 @@ import { ContactsView } from './views/ContactsView';
 import { OutboxView } from './views/OutboxView';
 import { SubscriptionsView } from './views/SubscriptionsView';
 
+const ComposerDock = lazy(() => import('./Composer').then((m) => ({ default: m.ComposerDock })));
+
 export function Shell({ session, config }: { session: SessionInfo; config?: ServerConfig }) {
   const view = useUi((s) => s.view);
   const open = useUi((s) => s.open);
+  const hasComposers = useUi((s) => s.composers.length > 0);
   const collapsed = useSettings((s) => s.s.sidebarCollapsed);
   const shortcuts = useSettings((s) => s.s.shortcuts);
   const listWidth = useSettings((s) => s.s.listWidth);
@@ -91,7 +93,11 @@ export function Shell({ session, config }: { session: SessionInfo; config?: Serv
       <button className="fab" aria-label="Compose" onClick={() => void composeNew()}>
         <PenLine size={22} />
       </button>
-      <ComposerDock />
+      {hasComposers && (
+        <Suspense fallback={null}>
+          <ComposerDock />
+        </Suspense>
+      )}
       <DialogHost />
       <Toasts />
     </div>

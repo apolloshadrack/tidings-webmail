@@ -100,8 +100,9 @@ export function sendError(reply: FastifyReply, err: unknown) {
   const e = err as { statusCode?: number; validation?: unknown; message?: string; issues?: unknown };
   if (e.issues) return reply.code(400).send({ error: 'Invalid request', code: 'VALIDATION', issues: e.issues });
   if (e.statusCode && e.statusCode < 500) return reply.code(e.statusCode).send({ error: e.message });
+  // Log the detail, never return it: internal errors can leak hosts, ports and server internals.
   reply.log.error({ err: e.message }, 'request failed');
-  return reply.code(502).send({ error: e.message ?? 'The mail server did not respond as expected', code: 'UPSTREAM' });
+  return reply.code(502).send({ error: 'The mail server did not respond as expected. Please try again.', code: 'UPSTREAM' });
 }
 
 export function endUserSessions(app: App, userKey: string) {

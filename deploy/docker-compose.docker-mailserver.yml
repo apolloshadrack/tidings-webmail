@@ -1,0 +1,25 @@
+# Example: Tidings next to docker-mailserver (https://github.com/docker-mailserver/docker-mailserver),
+# which ships no webmail of its own. Merge into your existing compose project.
+# docker-mailserver needs ENABLE_MANAGESIEVE=1 for filters & vacation in Tidings.
+services:
+  tidings:
+    image: ghcr.io/apolloshadrack/tidings-webmail:latest
+    restart: unless-stopped
+    environment:
+      TIDINGS_SECRET_FILE: /run/secrets/tidings_secret
+      TIDINGS_PUBLIC_URL: https://mail.example.com/webmail/
+      # Connect over the compose network, but verify the certificate for the public name:
+      TIDINGS_IMAP_URL: imaps://mailserver:993?servername=mail.example.com
+      TIDINGS_SMTP_URL: smtp://mailserver:587?servername=mail.example.com
+      TIDINGS_SIEVE_URL: sieve://mailserver:4190?servername=mail.example.com
+      TIDINGS_DEFAULT_DOMAIN: example.com
+      TIDINGS_TRUSTED_PROXIES: 172.16.0.0/12
+    secrets: [tidings_secret]
+    volumes:
+      - tidings-data:/data
+    depends_on: [mailserver]
+secrets:
+  tidings_secret:
+    file: ./secrets/tidings_secret
+volumes:
+  tidings-data:

@@ -15,12 +15,18 @@ export interface Toast {
   action?: { label: string; run: () => void };
   sticky?: boolean;
   ttl?: number;
+  /** keep: never replaced by later action toasts (undo send) */
+  keep?: boolean;
 }
 
 export interface UndoEntry {
+  id?: number;
+  at?: number;
   label: string;
   undo: () => Promise<void>;
 }
+
+const UNDO_TTL = 60_000;
 
 export interface ComposerWindow {
   id: string; // = draftId
@@ -37,8 +43,8 @@ export interface ComposerWindow {
 
 export type Dialog =
   | { kind: 'settings'; tab?: string }
-  | { kind: 'move'; mode: 'move' }
-  | { kind: 'snooze' }
+  | { kind: 'move'; mode: 'move'; items?: ListItem[] }
+  | { kind: 'snooze'; items?: ListItem[] }
   | { kind: 'help' }
   | { kind: 'palette' }
   | { kind: 'source'; mailbox: string; uidValidity: string; uid: number }
@@ -76,8 +82,8 @@ interface UiState {
   setVisible: (items: ListItem[]) => void;
   pushToast: (t: Omit<Toast, 'id'>) => number;
   dismissToast: (id: number) => void;
-  pushUndo: (u: UndoEntry) => void;
-  popUndo: () => UndoEntry | undefined;
+  pushUndo: (u: UndoEntry) => number;
+  takeUndo: (id?: number) => UndoEntry | undefined;
   setDialog: (d: Dialog) => void;
   openComposer: (w: ComposerWindow) => void;
   updateComposer: (id: string, patch: Partial<ComposerWindow> | ((w: ComposerWindow) => Partial<ComposerWindow>)) => void;
@@ -90,6 +96,7 @@ interface UiState {
 }
 
 let toastId = 1;
+let undoId = 1;
 let lastSelected: string | null = null;
 
 export const useUi = create<UiState>((set, get) => ({
@@ -110,9 +117,9 @@ export const useUi = create<UiState>((set, get) => ({
   mobileNav: false,
   dragItems: null,
 
-  setView: (v) => set({ view: v, cursor: null, selection: new Set(), open: null, focusZone: 'list', mobileNav: false }),
+  setView: (v) => set({ view: v, cursor: null, selection: new Set(), open: null, focusZone: 'list', mobileNav: false, visibleItems: [], senderPanel: null }),
   setCursor: (k) => set({ cursor: k }),
-  setOpen: (k) => set({ open: k, cursor: k ?? get().cursor, focusZone: k ? 'reader' : 'list' }),
+  setOpen: (k) => set({ open: k, cursor: k ?? get().cursor, focusZone: k ? 'reader' : 'list', senderPanel: null }),
   setFocusZone: (z) => set({ focusZone: z }),
   toggleSelect: (k, range) => {
     const sel = new Set(get().selection);
@@ -138,16 +145,20 @@ export const useUi = create<UiState>((set, get) => ({
   setVisible: (items) => set({ visibleItems: items }),
   pushToast: (t) => {
     const id = toastId++;
-    set({ toasts: [...get().toasts.filter((x) => !(t.action && x.action && !x.sticky)).slice(-3), { ...t, id }] });
+    set({ toasts: [...get().toasts.filter((x) => !(t.action && x.action && !x.sticky && !x.keep)).slice(-3), { ...t, id }] });
     if (!t.sticky) setTimeout(() => get().dismissToast(id), t.ttl ?? (t.action ? 7000 : 4000));
     return id;
   },
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
-  pushUndo: (u) => set({ undo: [...get().undo.slice(-9), u] }),
-  popUndo: () => {
-    const stack = [...get().undo];
-    const u = stack.pop();
-    set({ undo: stack });
+  pushUndo: (u) => {
+    const id = undoId++;
+    set({ undo: [...get().undo.filter((x) => Date.now() - (x.at ?? 0) < UNDO_TTL).slice(-9), { ...u, id, at: Date.now() }] });
+    return id;
+  },
+  takeUndo: (id) => {
+    const live = get().undo.filter((x) => Date.now() - (x.at ?? 0) < UNDO_TTL);
+    const u = id === undefined ? live[live.length - 1] : live.find((x) => x.id === id);
+    set({ undo: live.filter((x) => x !== u) });
     return u;
   },
   setDialog: (d) => set({ dialog: d }),
@@ -157,9 +168,9 @@ export const useUi = create<UiState>((set, get) => ({
       set({ composers: get().composers.map((c) => (c.id === w.id ? { ...c, minimized: false } : c)) });
       return;
     }
-    // At most 3 docked composers; minimise the others.
+    // Never drop a draft: older composers just minimise.
     const others = get().composers.map((c) => ({ ...c, minimized: true }));
-    set({ composers: [...others.slice(-2), w] });
+    set({ composers: [...others, w] });
   },
   updateComposer: (id, patch) =>
     set({

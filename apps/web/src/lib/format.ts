@@ -81,16 +81,30 @@ export function senderWarning(a: Address | undefined): string | null {
   return null;
 }
 
+/**
+ * Does the visible link text claim a different destination than the href? Handles Unicode
+ * look-alikes (both sides are normalised to punycode) and URLs embedded in longer text.
+ */
 export function linkMismatch(text: string, href: string): boolean {
-  const m = /^\s*(https?:\/\/)?([a-z0-9.-]+\.[a-z]{2,})(\/\S*)?\s*$/i.exec(text);
-  if (!m) return false;
+  let real: string;
   try {
-    const shown = m[2].toLowerCase().replace(/^www\./, '');
-    const real = new URL(href).hostname.toLowerCase().replace(/^www\./, '');
-    return shown !== real && !real.endsWith(`.${shown}`);
+    real = new URL(href).hostname.toLowerCase().replace(/^www\./, '');
   } catch {
     return false;
   }
+  const t = text.trim();
+  const whole = /^(https?:\/\/)?[\p{L}\p{N}.-]+\.[\p{L}]{2,}(\/\S*)?$/u.test(t) ? [t] : [];
+  const embedded = t.match(/(?:https?:\/\/|www\.)[\p{L}\p{N}.-]+\.[\p{L}]{2,}/gu) ?? [];
+  for (const token of [...whole, ...embedded]) {
+    try {
+      const shown = new URL(/^https?:/i.test(token) ? token : `http://${token}`).hostname.toLowerCase().replace(/^www\./, '');
+      if (shown !== real && !real.endsWith(`.${shown}`)) return true;
+    } catch {
+      /* not a URL after all */
+    }
+  }
+  // Punycode destinations are where homograph attacks live: always ask.
+  return real.split('.').some((label) => label.startsWith('xn--'));
 }
 
 export function plural(n: number, one: string, many = `${one}s`) {

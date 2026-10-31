@@ -184,11 +184,16 @@ export function mentionsAttachment(text: string): boolean {
 /** Parse a pasted "a@b.com, Name <c@d.com>; e@f" list into addresses. */
 export function parseAddressList(s: string): Address[] {
   const out: Address[] = [];
-  const re = /(?:"?([^"<>,;]*?)"?\s*<([^<>\s]+@[^<>\s]+)>|([^\s<>,;"]+@[^\s<>,;"]+))/g;
+  const seen = new Set<string>();
+  // "Last, First" <a@b>  |  Name <a@b>  |  a@b   (quoted names may contain commas)
+  const re = /(?:"([^"]*)"\s*<([^<>\s]+@[^<>\s]+)>|([^"<>,;\n]*?)\s*<([^<>\s]+@[^<>\s]+)>|([^\s<>,;"]+@[^\s<>,;"]+))/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
-    const address = (m[2] ?? m[3]).trim();
-    out.push({ name: (m[1] ?? '').trim(), address });
+    const address = (m[2] ?? m[4] ?? m[5]).trim();
+    const key = address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name: (m[1] ?? m[3] ?? '').trim(), address });
   }
   return out;
 }

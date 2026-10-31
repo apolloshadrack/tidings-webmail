@@ -19,6 +19,7 @@ export function targetsFor(items: ListItem[]): Target[] {
 /** What the next action applies to: the selection if any, else the open conversation, else the cursor row. */
 export function actionItems(): ListItem[] {
   const st = ui();
+  if (st.view.kind !== 'mailbox' && st.view.kind !== 'search') return [];
   const items = st.visibleItems;
   if (st.selection.size) return items.filter((i) => st.selection.has(i.key));
   const key = st.focusZone === 'reader' && st.open ? st.open : st.cursor;
@@ -97,22 +98,63 @@ function errorToast(err: unknown, retry?: () => void) {
     ui().pushToast({ message: 'This folder changed on the server. Refreshed.', tone: 'info' });
     return;
   }
-  ui().pushToast({ message: e.message || 'Something went wrong', tone: 'error', sticky: !!retry, action: retry ? { label: 'Retry', run: retry } : undefined });
+  const msg = e.status === 0 ? 'You appear to be offline. Nothing was changed.' : e.status >= 500 ? 'The mail server didn’t respond. Nothing was changed.' : e.message || 'Something went wrong';
+  ui().pushToast({ message: msg, tone: 'error', sticky: !!retry, action: retry ? { label: 'Retry', run: retry } : undefined });
+}
+
+/** A successful call clears stale "failed" toasts. */
+function clearErrors() {
+  for (const t of ui().toasts) if (t.tone === 'error') ui().dismissToast(t.id);
+}
+
+/** Retry once on transient server errors before telling the user. */
+async function call<T>(path: string, body: unknown): Promise<T> {
+  try {
+    return await api<T>(path, { body });
+  } catch (err) {
+    const e = err as ApiError;
+    if (e.status >= 500 || e.status === 0) {
+      await new Promise((r) => setTimeout(r, 600));
+      return api<T>(path, { body });
+    }
+    throw err;
+  }
 }
 
 interface MoveResponse {
   results: { from: string; uids: number[]; destination: string; uidValidity?: string; uidMap: Record<string, number> }[];
 }
 
-function undoMove(res: MoveResponse) {
+function where() {
+  const st = ui();
+  return { cursor: st.cursor, open: st.open, selection: new Set(st.selection), view: st.view };
+}
+
+/** Undo puts the user back where they were (cursor, open conversation, selection). */
+function restoreWhere(w: ReturnType<typeof where>) {
+  const st = ui();
+  if (JSON.stringify(st.view) !== JSON.stringify(w.view)) return;
+  setTimeout(() => {
+    useUiSet({ cursor: w.cursor, selection: w.selection });
+    if (w.open) ui().setOpen(w.open);
+  }, 150);
+}
+
+function useUiSet(patch: { cursor: string | null; selection: Set<string> }) {
+  ui().setCursor(patch.cursor);
+  for (const k of patch.selection) if (!ui().selection.has(k)) ui().toggleSelect(k);
+}
+
+function undoMove(res: MoveResponse, w: ReturnType<typeof where>) {
   return async () => {
     for (const r of res.results) {
       const back = r.uids.map((u) => r.uidMap[u]).filter(Boolean);
-      if (!back.length || !r.uidValidity) continue;
-      await api('/api/actions/move', { body: { targets: [{ mailbox: r.destination, uidValidity: r.uidValidity, uids: back }], to: r.from } });
+      if (!back.length || !r.uidValidity) throw new Error('This can’t be undone automatically — the server didn’t report where the messages went.');
+      await call('/api/actions/move', { targets: [{ mailbox: r.destination, uidValidity: r.uidValidity, uids: back }], to: r.from });
     }
     await queryClient.invalidateQueries({ queryKey: ['list'] });
     invalidateSoon();
+    restoreWhere(w);
   };
 }
 
@@ -121,21 +163,28 @@ function folderLabel(path: string) {
   return boxes.find((b) => b.path === path)?.name ?? path;
 }
 
+function roleOf(it: ListItem): string | null {
+  return queryClient.getQueryData<Mailbox[]>(['mailboxes'])?.find((b) => b.path === it.mailbox)?.role ?? null;
+}
+
+/** Push an undo entry and show its toast; the toast's button undoes exactly that entry. */
+function offerUndo(label: string, message: string, undo: () => Promise<void>) {
+  const id = ui().pushUndo({ label, undo });
+  ui().pushToast({ message, action: { label: 'Undo', run: () => void runUndo(id) } });
+}
+
 export async function move(items: ListItem[], dest: { role?: 'archive' | 'trash' | 'junk' | 'inbox' | 'notjunk'; to?: string }, verb: string) {
   if (!items.length) return;
+  const w = where();
   const keys = new Set(items.map((i) => i.key));
   advanceAfterRemoval(keys);
   const snap = removeRows(keys);
   const n = items.length;
   const what = n === 1 ? 'Conversation' : `${n} conversations`;
   try {
-    const res = await api<MoveResponse>('/api/actions/move', { body: { targets: targetsFor(items), ...dest } });
-    const undo = undoMove(res);
-    ui().pushUndo({ label: `${verb} ${what.toLowerCase()}`, undo });
-    ui().pushToast({
-      message: `${what} ${verb.toLowerCase()}${dest.to ? ` to ${folderLabel(dest.to)}` : ''}`,
-      action: { label: 'Undo', run: () => void runUndo() },
-    });
+    const res = await call<MoveResponse>('/api/actions/move', { targets: targetsFor(items), ...dest });
+    clearErrors();
+    offerUndo(`${verb} ${what.toLowerCase()}`, `${what} ${verb.toLowerCase()}${dest.to ? ` to ${folderLabel(dest.to)}` : ''}`, undoMove(res, w));
     invalidateSoon();
   } catch (err) {
     restore(snap);
@@ -148,32 +197,38 @@ export async function move(items: ListItem[], dest: { role?: 'archive' | 'trash'
 }
 
 export const archive = (items = actionItems()) => {
-  const role = items[0] ? queryClient.getQueryData<Mailbox[]>(['mailboxes'])?.find((b) => b.path === items[0].mailbox)?.role : null;
-  if (role === '\\Archive') return move(items, { role: 'inbox' }, 'Moved to Inbox');
-  return move(items, { role: 'archive' }, 'Archived');
+  // Each item is routed by its own folder: archiving inside Archive moves back to the Inbox.
+  const inArchive = items.filter((i) => roleOf(i) === '\\Archive');
+  const rest = items.filter((i) => roleOf(i) !== '\\Archive');
+  if (inArchive.length) void move(inArchive, { role: 'inbox' }, 'Moved to Inbox');
+  if (rest.length) return move(rest, { role: 'archive' }, 'Archived');
 };
 
 export const trash = (items = actionItems()) => {
-  const role = items[0] ? queryClient.getQueryData<Mailbox[]>(['mailboxes'])?.find((b) => b.path === items[0].mailbox)?.role : null;
-  if (role === '\\Trash' || role === '\\Junk') return deleteForever(items);
-  return move(items, { role: 'trash' }, 'Deleted');
+  // Only items already in Trash/Spam are deleted for good; everything else goes to Trash.
+  const final = items.filter((i) => ['\\Trash', '\\Junk'].includes(roleOf(i) ?? ''));
+  const rest = items.filter((i) => !final.includes(i));
+  if (rest.length) void move(rest, { role: 'trash' }, 'Deleted');
+  if (final.length) deleteForever(final);
 };
 
 export const junk = (items = actionItems()) => {
-  const role = items[0] ? queryClient.getQueryData<Mailbox[]>(['mailboxes'])?.find((b) => b.path === items[0].mailbox)?.role : null;
-  if (role === '\\Junk') return move(items, { role: 'notjunk' }, 'Marked as not spam');
-  return move(items, { role: 'junk' }, 'Marked as spam');
+  const inJunk = items.filter((i) => roleOf(i) === '\\Junk');
+  const rest = items.filter((i) => roleOf(i) !== '\\Junk');
+  if (inJunk.length) void move(inJunk, { role: 'notjunk' }, 'Marked as not spam');
+  if (rest.length) return move(rest, { role: 'junk' }, 'Marked as spam');
 };
 
-export const moveTo = (path: string, items = actionItems()) => move(items, { to: path }, 'Moved');
+export const moveTo = (path: string, items = actionItems()) => move(items.filter((i) => i.mailbox !== path), { to: path }, 'Moved');
 
 export function deleteForever(items = actionItems()) {
   if (!items.length) return;
   const n = items.length;
+  const where_ = [...new Set(items.map((i) => folderLabel(i.mailbox)))].join(' and ');
   ui().setDialog({
     kind: 'confirm',
     title: n === 1 ? 'Delete forever?' : `Delete ${n} conversations forever?`,
-    body: 'This cannot be undone.',
+    body: `${n === 1 ? 'This conversation is' : 'These conversations are'} already in ${where_}. Deleting ${n === 1 ? 'it' : 'them'} again removes ${n === 1 ? 'it' : 'them'} permanently and cannot be undone.`,
     confirm: 'Delete forever',
     danger: true,
     run: async () => {
@@ -181,7 +236,8 @@ export function deleteForever(items = actionItems()) {
       advanceAfterRemoval(keys);
       const snap = removeRows(keys);
       try {
-        await api('/api/actions/delete', { body: { targets: targetsFor(items) } });
+        await call('/api/actions/delete', { targets: targetsFor(items) });
+        clearErrors();
         ui().pushToast({ message: n === 1 ? 'Deleted forever' : `${n} deleted forever` });
         invalidateSoon();
       } catch (err) {
@@ -195,21 +251,22 @@ export function deleteForever(items = actionItems()) {
 async function flags(items: ListItem[], add: string[], remove: string[], patch: (i: ListItem) => ListItem, label?: string, silent = false) {
   if (!items.length) return;
   const keys = new Set(items.map((i) => i.key));
+  const before = new Map(items.map((i) => [i.key, i]));
   const snap = patchRows(keys, patch);
   ui().setVisible(ui().visibleItems.map((i) => (keys.has(i.key) ? patch(i) : i)));
   try {
-    await api('/api/actions/flags', { body: { targets: targetsFor(items), add, remove } });
+    await call('/api/actions/flags', { targets: targetsFor(items), add, remove });
+    clearErrors();
     if (label) {
-      ui().pushUndo({
-        label,
-        undo: async () => {
-          await api('/api/actions/flags', { body: { targets: targetsFor(items), add: remove, remove: add } });
-          await queryClient.invalidateQueries({ queryKey: ['list'] });
-          invalidateSoon();
-        },
-      });
+      const undo = async () => {
+        await call('/api/actions/flags', { targets: targetsFor(items), add: remove, remove: add });
+        patchRows(keys, (i) => before.get(i.key) ?? i);
+        await queryClient.invalidateQueries({ queryKey: ['list'] });
+        invalidateSoon();
+      };
+      if (silent) ui().pushUndo({ label, undo });
+      else offerUndo(label, label, undo);
     }
-    if (!silent && label) ui().pushToast({ message: label, action: { label: 'Undo', run: () => void runUndo() } });
     invalidateSoon();
     for (const it of items) void queryClient.invalidateQueries({ queryKey: ['thread', it.threadId] });
   } catch (err) {
@@ -221,48 +278,42 @@ async function flags(items: ListItem[], add: string[], remove: string[], patch: 
 export function toggleStar(items = actionItems()) {
   if (!items.length) return;
   const on = !items.every((i) => i.flagged);
-  return flags(items, on ? ['\\Flagged'] : [], on ? [] : ['\\Flagged'], (i) => ({ ...i, flagged: on }), on ? undefined : undefined, true);
+  const n = items.length > 1 ? `${items.length} conversations` : 'Conversation';
+  return flags(items, on ? ['\\Flagged'] : [], on ? [] : ['\\Flagged'], (i) => ({ ...i, flagged: on }), on ? `${n} starred` : `${n} unstarred`, true);
 }
 
 export function setRead(items: ListItem[], read: boolean, silent = false) {
-  const need = items.filter((i) => i.unread === read || (read && i.unreadCount > 0));
-  if (!need.length && !silent) return;
+  const need = items.filter((i) => (read ? i.unread || i.unreadCount > 0 : !i.unread));
+  if (!need.length) return;
   return flags(
-    items,
+    need,
     read ? ['\\Seen'] : [],
     read ? [] : ['\\Seen'],
     (i) => ({ ...i, unread: !read, unreadCount: read ? 0 : Math.max(1, i.unreadCount) }),
-    silent ? undefined : read ? `Marked ${items.length > 1 ? `${items.length} ` : ''}as read` : `Marked ${items.length > 1 ? `${items.length} ` : ''}as unread`,
+    silent ? undefined : read ? `Marked ${need.length > 1 ? `${need.length} ` : ''}as read` : `Marked ${need.length > 1 ? `${need.length} ` : ''}as unread`,
     silent,
   );
 }
 
 export async function snooze(until: number, items = actionItems()) {
   if (!items.length) return;
+  const w = where();
   const keys = new Set(items.map((i) => i.key));
   advanceAfterRemoval(keys);
   const snap = removeRows(keys);
   try {
+    const messageIds: string[] = [];
     for (const t of targetsFor(items)) {
-      const res = await api<{ folder: string; uidMap: Record<string, number> }>('/api/snooze', { body: { ...t, until } });
-      const mailbox = t.mailbox;
-      ui().pushUndo({
-        label: 'Snooze',
-        undo: async () => {
-          const boxes = await queryClient.fetchQuery({ queryKey: ['mailboxes'], queryFn: () => api<{ mailboxes: Mailbox[] }>('/api/mailboxes').then((r) => r.mailboxes) });
-          const sn = boxes.find((b) => b.path === res.folder);
-          const back = t.uids.map((u) => res.uidMap[u]).filter(Boolean);
-          if (sn?.uidValidity && back.length) {
-            await api('/api/actions/move', { body: { targets: [{ mailbox: res.folder, uidValidity: sn.uidValidity, uids: back }], to: mailbox } });
-          }
-          await queryClient.invalidateQueries({ queryKey: ['list'] });
-        },
-      });
+      const res = await call<{ folder: string; messageIds: string[] }>('/api/snooze', { ...t, until });
+      messageIds.push(...res.messageIds);
     }
+    clearErrors();
     const when = new Date(until);
-    ui().pushToast({
-      message: `Snoozed until ${when.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`,
-      action: { label: 'Undo', run: () => void runUndo() },
+    offerUndo('Snooze', `Snoozed until ${when.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`, async () => {
+      await call('/api/snooze/cancel', { messageIds });
+      await queryClient.invalidateQueries({ queryKey: ['list'] });
+      invalidateSoon();
+      restoreWhere(w);
     });
     invalidateSoon();
   } catch (err) {
@@ -271,15 +322,15 @@ export async function snooze(until: number, items = actionItems()) {
   }
 }
 
-export async function runUndo() {
-  const u = ui().popUndo();
+export async function runUndo(id?: number) {
+  const u = ui().takeUndo(id);
   if (!u) {
-    ui().pushToast({ message: 'Nothing to undo' });
+    ui().pushToast({ message: id === undefined ? 'Nothing to undo' : 'Too late to undo that' });
     return;
   }
   try {
     await u.undo();
-    ui().pushToast({ message: `Undone: ${u.label}`, tone: 'success' });
+    ui().pushToast({ message: `Undone: ${u.label.toLowerCase()}`, tone: 'success' });
   } catch (err) {
     errorToast(err);
   }

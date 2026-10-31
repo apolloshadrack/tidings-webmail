@@ -124,7 +124,14 @@ export const settings = () => useSettings.getState().s;
 // Appearance: theme tokens -> CSS custom properties on <html>.
 
 const media = window.matchMedia('(prefers-color-scheme: dark)');
+let brandAccent: string | null = null;
+/** Admin-configured default accent (TIDINGS_BRAND_ACCENT), used until the user picks one. */
+export function setBrandAccent(a: string | null | undefined) {
+  brandAccent = a && /^#[0-9a-f]{6}$/i.test(a) ? a : null;
+  applyAppearance(useSettings.getState().s);
+}
 media.addEventListener('change', () => applyAppearance(settings()));
+window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => applyAppearance(settings()));
 
 function mix(a: string, b: string, t: number): string {
   const pa = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16));
@@ -138,11 +145,15 @@ export function activeThemeId(s: Settings): string {
 }
 
 export function applyAppearance(s: Settings) {
+  // Suppress colour transitions for one frame so a theme switch never renders half-swapped.
+  document.documentElement.classList.add('theme-switching');
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('theme-switching')));
   const theme = themeById(activeThemeId(s));
   const t = { ...theme.tokens };
-  if (s.accent && /^#[0-9a-f]{6}$/i.test(s.accent)) {
+  const accentChoice = s.accent ?? brandAccent;
+  if (accentChoice && /^#[0-9a-f]{6}$/i.test(accentChoice)) {
     // Keep a custom accent legible: nudge it toward the text colour until it reads as text on every panel.
-    let accent = s.accent;
+    let accent = accentChoice;
     for (let i = 0; i < 12 && Math.min(contrast(accent, t.surface), contrast(accent, t.sunken), contrast(accent, t.raised)) < 4.5; i++) {
       accent = mix(accent, t.text, 0.12);
     }

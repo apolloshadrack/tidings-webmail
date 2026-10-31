@@ -252,7 +252,7 @@ export function mailRoutes(f: FastifyInstance, app: App) {
         params.push(fts);
       }
       const role = mailbox ? roles.get(mailbox) : undefined;
-      const threads = !!mailbox && q.threads === '1' && !['\\Drafts', '\\Sent', '\\Trash'].includes(role ?? '') && !q.q;
+      const threads = q.threads === '1' && !['\\Drafts', '\\Sent', '\\Trash'].includes(role ?? '');
       let cursorDate = Number.MAX_SAFE_INTEGER;
       let cursorKey = '￿';
       if (q.cursor) {
@@ -286,7 +286,7 @@ export function mailRoutes(f: FastifyInstance, app: App) {
       const groups = app.db
         .prepare(
           `SELECT m.thread_id AS tid, MAX(m.date) AS d, COUNT(*) AS n, SUM(m.seen = 0) AS unread, MAX(m.flagged) AS flagged,
-                  MAX(m.has_attachments) AS att, json_group_array(m.uid) AS uids
+                  MAX(m.has_attachments) AS att
            FROM messages m WHERE ${where.join(' AND ')}
            GROUP BY m.thread_id
            HAVING (d < ? OR (d = ? AND tid < ?))
@@ -299,25 +299,24 @@ export function mailRoutes(f: FastifyInstance, app: App) {
         unread: number;
         flagged: number;
         att: number;
-        uids: string;
       }[];
       const more = groups.length > q.limit;
       const page = groups.slice(0, q.limit);
-      const latest = app.db.prepare(
-        `SELECT m.rowid, m.* FROM messages m WHERE m.user_key = ? AND m.thread_id = ? AND m.mailbox = ? AND m.deleted = 0 ORDER BY m.date DESC LIMIT 1`,
-      );
+      // Representative row = newest matching message of the thread; actions target its folder's copies.
+      const latest = app.db.prepare(`SELECT m.rowid, m.* FROM messages m WHERE ${where.join(' AND ')} AND m.thread_id = ? ORDER BY m.date DESC LIMIT 1`);
+      const uidsIn = app.db.prepare(`SELECT m.uid FROM messages m WHERE ${where.join(' AND ')} AND m.thread_id = ? AND m.mailbox = ?`);
       const participantsQ = app.db.prepare(
         `SELECT from_name, from_addr, MIN(date) first FROM messages WHERE user_key = ? AND thread_id = ? GROUP BY from_addr ORDER BY first LIMIT 4`,
       );
       const totalQ = app.db.prepare(`SELECT COUNT(DISTINCT COALESCE(message_id, mailbox || uid)) n FROM messages WHERE user_key = ? AND thread_id = ? AND deleted = 0`);
       const items = page.map((g) => {
-        const r = latest.get(s.userKey, g.tid, mailbox) as MsgRow;
+        const r = latest.get(...params, g.tid) as MsgRow;
         const it = itemFromRow(r);
         const participants = (participantsQ.all(s.userKey, g.tid) as { from_name: string; from_addr: string }[]).map((p) => ({ name: p.from_name, address: p.from_addr }));
         return {
           ...it,
           key: `t:${g.tid}`,
-          uids: JSON.parse(g.uids) as number[],
+          uids: (uidsIn.all(...params, g.tid, r.mailbox) as { uid: number }[]).map((x) => x.uid),
           count: (totalQ.get(s.userKey, g.tid) as { n: number }).n,
           unreadCount: g.unread,
           unread: g.unread > 0,

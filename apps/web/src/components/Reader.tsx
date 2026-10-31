@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Archive, ArrowLeft, ChevronDown, ChevronUp, Clock, Download, Eye, File, FileCode2, FileImage, FileText, Filter, Forward, FolderInput, Loader2, MailOpen,
   MoreHorizontal, Paperclip, Printer, Reply, ReplyAll, ShieldAlert, ShieldCheck, Star, Trash2, UserX, X, AlertTriangle, ImageOff,
@@ -9,14 +9,16 @@ import type { Attachment, FullMessage, ListItem, Mailbox, SessionInfo } from '..
 import { archive, junk, setRead, toggleStar, trash } from '../lib/actions';
 import { editDraftMessage, forward, reply, setCurrentMessage, setQuoteSelection } from '../lib/composeActions';
 import { bytes, clean, displayName, fullDate, listDate, relative, senderWarning } from '../lib/format';
+import { baseSubject } from '../lib/compose';
 import { splitQuoted } from '../lib/sanitize';
 import { useMailboxes, useMessage, useThread } from '../state/queries';
 import { useSettings } from '../state/settings';
 import { useUi } from '../state/ui';
 import { Avatar } from './Brand';
-import { InlineComposer } from './Composer';
 import { type FrameInfo, MessageFrame } from './MessageFrame';
 import { Menu, type MenuItem } from './Menu';
+
+const InlineComposer = lazy(() => import('./Composer').then((m) => ({ default: m.InlineComposer })));
 
 export function Reader({ session }: { session: SessionInfo }) {
   const open = useUi((s) => s.open);
@@ -67,7 +69,7 @@ function Conversation({ item, session }: { item: ListItem; session: SessionInfo 
       if (m.unread || i === messages.length - 1) keys.add(`${m.mailbox}:${m.uid}`);
     });
     setExpanded(keys);
-  }, [messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item.key, messages.map((m) => `${m.mailbox}:${m.uid}`).join('|')]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const firstUnread = messages.findIndex((m) => m.unread);
@@ -83,7 +85,7 @@ function Conversation({ item, session }: { item: ListItem; session: SessionInfo 
 
   // Mark as read after the configured delay; cancelled if the user moves on first.
   useEffect(() => {
-    if (!item.unread || markDelay < 0) return;
+    if ((!item.unread && !item.unreadCount) || markDelay < 0) return;
     const t = setTimeout(() => void setRead([item], true, true), markDelay);
     return () => clearTimeout(t);
   }, [item.key, markDelay]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -143,13 +145,13 @@ function Conversation({ item, session }: { item: ListItem; session: SessionInfo 
         )}
         <button className="icon-btn" aria-label="Newer conversation" title="Newer (k)" disabled={idx <= 0} onClick={() => step(-1)}><ChevronUp size={18} /></button>
         <button className="icon-btn" aria-label="Older conversation" title="Older (j)" disabled={idx < 0 || idx >= items.length - 1} onClick={() => step(1)}><ChevronDown size={18} /></button>
-        <button className="icon-btn" aria-label="More actions" aria-haspopup="menu" onClick={(e) => setMenu({ x: e.currentTarget.getBoundingClientRect().right - 220, y: e.currentTarget.getBoundingClientRect().bottom + 4 })}>
+        <button className="icon-btn" aria-label="More actions" aria-haspopup="menu" aria-expanded={!!menu} onClick={(e) => setMenu({ x: e.currentTarget.getBoundingClientRect().right - 220, y: e.currentTarget.getBoundingClientRect().bottom + 4 })}>
           <MoreHorizontal size={18} />
         </button>
       </div>
       <div className="reader-scroll" ref={scrollRef}>
         <article className="thread">
-          <h2 className="thread-subject"><bdi>{clean(item.subject) || '(no subject)'}</bdi></h2>
+          <h2 className="thread-subject"><bdi>{baseSubject(clean(messages[0]?.subject ?? item.subject)) || '(no subject)'}</bdi></h2>
           <div className="thread-meta">
             {folderChips.map((b) => (
               <span key={b.path} className="folder-chip">
@@ -160,28 +162,33 @@ function Conversation({ item, session }: { item: ListItem; session: SessionInfo 
             {messages.length > 1 && <span>{messages.length} messages</span>}
             {thread.isFetching && <Loader2 size={13} className="spin" />}
           </div>
-          {messages.map((m, i) => {
-            const k = `${m.mailbox}:${m.uid}`;
-            return (
-              <MessageCard
-                key={k}
-                item={m}
-                me={me}
-                expanded={expanded.has(k)}
-                isLast={i === messages.length - 1}
-                onToggle={() => {
-                  const n = new Set(expanded);
-                  if (n.has(k)) n.delete(k);
-                  else n.add(k);
-                  setExpanded(n);
-                }}
-                threadKey={item.key}
-                isDraftFolder={boxes.find((b) => b.path === m.mailbox)?.role === '\\Drafts'}
-              />
-            );
+          {groupRuns(messages, (m) => expanded.has(`${m.mailbox}:${m.uid}`)).map((run) => {
+            const cards = run.items.map(({ m, i }) => {
+              const k = `${m.mailbox}:${m.uid}`;
+              return (
+                <MessageCard
+                  key={k}
+                  item={m}
+                  me={me}
+                  expanded={expanded.has(k)}
+                  isLast={i === messages.length - 1}
+                  onToggle={() => {
+                    const n = new Set(expanded);
+                    if (n.has(k)) n.delete(k);
+                    else n.add(k);
+                    setExpanded(n);
+                  }}
+                  threadKey={item.key}
+                  isDraftFolder={boxes.find((b) => b.path === m.mailbox)?.role === '\\Drafts'}
+                />
+              );
+            });
+            return run.open ? cards : <div key={`stack-${run.items[0].i}`} className="thread-stack">{cards}</div>;
           })}
           {inline ? (
-            <InlineComposer id={inline.id} />
+            <Suspense fallback={null}>
+              <InlineComposer id={inline.id} />
+            </Suspense>
           ) : (
             <ReplyBar last={messages[messages.length - 1]} threadKey={item.key} />
           )}
@@ -226,7 +233,10 @@ function MessageCard({ item, me, expanded, isLast, onToggle, threadKey, isDraftF
   useEffect(() => {
     if (!m) return;
     const policy = s.remoteImages;
-    setAllowImages(policy === 'always' || (policy === 'trusted' && m.imagesTrusted) || m.imagesTrusted);
+    // "Always from this sender" is keyed on a From address, which can be forged: honour it only when
+    // the server's trusted Authentication-Results show DKIM passed (or none are configured).
+    const senderOk = m.imagesTrusted && (!m.auth || m.auth.dkim === 'pass');
+    setAllowImages(policy === 'always' || senderOk);
   }, [m?.uid, m?.imagesTrusted, s.remoteImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -242,7 +252,12 @@ function MessageCard({ item, me, expanded, isLast, onToggle, threadKey, isDraftF
   if (!expanded) {
     return (
       <div className="msg collapsed" id={`msg-${item.mailbox}:${item.uid}`}>
-        <div className="msg-head" onClick={onToggle} role="button" tabIndex={0} aria-expanded={false} onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onToggle()}>
+        <div className="msg-head" onClick={onToggle} role="button" tabIndex={0} aria-expanded={false} onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onToggle();
+            }
+          }}>
           <Avatar addr={from} />
           <div className="who">
             <div>
@@ -282,7 +297,7 @@ function MessageCard({ item, me, expanded, isLast, onToggle, threadKey, isDraftF
             {(!m?.senderKnown || !from.name) && <span className="addr">{from.address}</span>}
             {warning && (
               <span className="sender-warning" title={warning} style={{ marginLeft: 8 }}>
-                <AlertTriangle size={13} /> Check sender
+                <AlertTriangle size={13} aria-hidden="true" /> Check sender
               </span>
             )}
           </div>
@@ -430,7 +445,7 @@ const RISKY = /\.(exe|scr|bat|cmd|com|js|jse|vbs|vbe|wsf|ps1|msi|jar|hta|lnk|iso
 function Attachments({ msg }: { msg: FullMessage }) {
   const list = msg.attachments.filter((a) => !(a.inline && a.cid && msg.html?.includes(`cid:${a.cid}`)));
   return (
-    <div className="attachments" aria-label="Attachments">
+    <div className="attachments" role="group" aria-label="Attachments">
       {list.map((a) => (
         <AttachmentCard key={a.part} msg={msg} a={a} />
       ))}
@@ -594,4 +609,16 @@ function SenderPanel({ email, onClose }: { email: string; onClose: () => void })
       </button>
     </aside>
   );
+}
+
+/** Split a thread into runs of consecutive expanded / collapsed messages. */
+function groupRuns<T>(list: T[], isOpen: (t: T) => boolean): { open: boolean; items: { m: T; i: number }[] }[] {
+  const runs: { open: boolean; items: { m: T; i: number }[] }[] = [];
+  list.forEach((m, i) => {
+    const open = isOpen(m);
+    const last = runs[runs.length - 1];
+    if (last && last.open === open && !open) last.items.push({ m, i });
+    else runs.push({ open, items: [{ m, i }] });
+  });
+  return runs;
 }

@@ -203,3 +203,38 @@ receipts, TNEF, mbox export, Prometheus metrics, signed multi-arch images, offli
     per-draft quotas; temp files swept on send, discard, logout and boot.
 16. **Isolation**: `userKey = sha256(host:port \0 username)`; every repository query requires it; the data
     files are mode 0600; the service worker never caches `/api/*`; no message bodies in browser storage.
+
+## Appendix B — round-2 review of the running app
+
+Three critics tested the running app against the seeded dev mail server: an art director, a heavy
+email user and an accessibility/security auditor. Each defect class below was fixed and, where
+possible, covered by a regression check in `scripts/e2e.mjs`, `apps/server/src/security.test.ts`,
+`scripts/check-contrast.ts` or `scripts/check-sandbox.mjs`.
+
+- **Security:** escaped CSS `url()` and `image-set()` could reach the app's own API once images were
+  allowed. CSS is now sanitised through the CSSOM, and the frame's `img-src` names only the proxy path.
+  Also fixed: IPv4-compatible IPv6 in the egress guard, raw upstream errors returned to clients, the
+  proxy acting as a reachability oracle, `\Deleted` settable in any folder, bidi-control characters in
+  forwarded filenames, drafts synced with an unchecked From, punycode look-alike links not flagged,
+  and middle-clicks skipping link confirmation.
+- **Wrong-target actions:** a mixed selection could hard-delete Inbox mail, hover buttons could act on
+  the open conversation instead of their own row, and keys could act on a hidden list. Every item is
+  now routed by its own folder, hover actions target their row, and list commands only run on list
+  views.
+- **Undo:** undo entries now have ids and expire after 60 seconds. Toasts undo their own action,
+  undo restores cursor, selection and open conversation, star and send are undoable (`z` cancels a
+  pending send), and snooze undo goes through the server.
+- **Realtime:** a dead event stream behind a proxy or after a restart went unnoticed. The server now
+  sends visible pings, the client reconnects with backoff, a leader that keeps failing hands off, IDLE
+  starts immediately, syncs NOOP first and re-run when a change arrives mid-sync, and connecting
+  browsers get a catch-up sync. Measured: new mail appears about 0.8 s after SMTP delivery.
+- **Accessibility:** active-descendant list semantics, focus trap and return for every modal, menu
+  focus return, combobox semantics for recipients, a visible outline focus ring on every control, and
+  320 px reflow. Text on selected rows is now covered by the contrast check.
+- **Design:** the app no longer grows past the viewport, compact density works, the focus rail is used
+  consistently, threads show collapsed messages as a stack of lines, per-folder empty states, an
+  account menu, a calmer Compose button, theme-aware avatars and selection, and the composer and
+  settings are code-split (initial JS about 150 KB gzipped).
+- **Known gaps (roadmap):** select-all-matching for very large folders, `n`/`p` within a
+  conversation, natural-language snooze times, a dedicated illustration set, and an unsaved-changes
+  guard in Settings → Filters.

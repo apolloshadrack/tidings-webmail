@@ -10,6 +10,12 @@ for (const t of THEMES) {
     checks.push(['star', bg, '', 3]);
   }
   checks.push(['accentText', 'accent', '', 4.5]);
+  // Text on tinted rows (selected / open) — mirrors --selected / --selected-strong in app.css.
+  const mix = (a: string, b: string, t: number) => '#' + [1, 3, 5].map((i) => Math.round(parseInt(a.slice(i, i + 2), 16) * t + parseInt(b.slice(i, i + 2), 16) * (1 - t)).toString(16).padStart(2, '0')).join('');
+  const strong = mix(k.accent, k.surface, t.dark ? 0.17 : 0.14);
+  (k as any).selectedStrong = strong;
+  // app.css steps snippets and dates up to text-2 on tinted rows, so text-3 is never used there.
+  for (const fg of ['text', 'text2'] as const) checks.push([fg, 'selectedStrong', '', 4.5]);
   for (const [fg, bg, , min] of checks) {
     const r = contrast((k as any)[fg], (k as any)[bg]);
     if (r < min) { failures++; console.log(`${t.id.padEnd(16)} ${fg} on ${bg}: ${r.toFixed(2)} < ${min}`); }

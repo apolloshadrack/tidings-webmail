@@ -1,11 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Archive, Check, Clock, Loader2, MailOpen, Mail, Paperclip, RefreshCw, Search, Star, Trash2, X, FolderInput, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Archive, Check, Clock, Loader2, MailOpen, Mail, Paperclip, RefreshCw, Search, Star, Trash2, X, FolderInput, ShieldAlert } from 'lucide-react';
 import { api } from '../api/client';
 import type { ListItem, ListPage, Mailbox, SessionInfo } from '../api/types';
 import { archive, setRead, toggleStar, trash, junk } from '../lib/actions';
 import { editDraftMessage } from '../lib/composeActions';
-import { displayName, listDate, plural } from '../lib/format';
+import { displayName, listDate, plural, senderWarning } from '../lib/format';
+import { announce } from './Toasts';
 import { fetchMessage, listParams, prefetchMessage, queryClient, threadKey, useList, useMailboxes } from '../state/queries';
 import { useSettings } from '../state/settings';
 import { useUi } from '../state/ui';
@@ -28,7 +29,8 @@ export function MessageList() {
   const [showSkeleton, setShowSkeleton] = useState(false);
   const [newPill, setNewPill] = useState(0);
   const firstKey = useRef<string | null>(null);
-  const me = new Set([queryClient.getQueryData<SessionInfo>(['session'])?.email ?? '']);
+  const myEmail = queryClient.getQueryData<SessionInfo>(['session'])?.email ?? '';
+  const me = useMemo(() => new Set([myEmail]), [myEmail]);
 
   const [bodyResults, setBodyResults] = useState<ListItem[]>([]);
   const [bodySearch, setBodySearch] = useState<{ done: number; total: number; running: boolean } | null>(null);
@@ -56,7 +58,10 @@ export function MessageList() {
     const top = items[0]?.key ?? null;
     if (firstKey.current && top && top !== firstKey.current && (scrollRef.current?.scrollTop ?? 0) > 40) {
       const idx = items.findIndex((i) => i.key === firstKey.current);
-      if (idx > 0) setNewPill(idx);
+      if (idx > 0) {
+        setNewPill(idx);
+        announce(`${idx} new conversation${idx === 1 ? '' : 's'}`);
+      }
     }
     firstKey.current = top;
   }, [items, setVisible]);
@@ -84,7 +89,7 @@ export function MessageList() {
   // infinite scroll
   const last = virt.getVirtualItems().at(-1);
   useEffect(() => {
-    if (last && last.index >= items.length - 15 && list.hasNextPage && !list.isFetchingNextPage) void list.fetchNextPage();
+    if (last && last.index >= items.length - 60 && list.hasNextPage && !list.isFetchingNextPage) void list.fetchNextPage();
   }, [last?.index, items.length, list.hasNextPage, list.isFetchingNextPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // prefetch around the cursor: next 3, previous 1 (thread index + latest body)
@@ -124,6 +129,7 @@ export function MessageList() {
         void fetchMessage(it).then((m) => editDraftMessage(m));
         return;
       }
+      st.clearSelection();
       st.setCursor(it.key);
       st.setOpen(it.key);
     },
@@ -162,10 +168,23 @@ export function MessageList() {
     <>
       <div className="list-head">
         <h1 className="list-title">{title}</h1>
+        {tabs && (
+        <div className="tabs" role="tablist" aria-label="Split inbox">
+          {tabs.map((t) => (
+            <button key={t.id} role="tab" aria-selected={activeTab === t.id} className={`tab${activeTab === t.id ? ' active' : ''}`} onClick={() => useUi.getState().setView({ kind: 'mailbox', path: 'INBOX', tab: t.id })}>
+              {t.name}
+            </button>
+          ))}
+          <button role="tab" aria-selected={activeTab === '__all'} className={`tab${activeTab === '__all' ? ' active' : ''}`} onClick={() => useUi.getState().setView({ kind: 'mailbox', path: 'INBOX', tab: '__all' })}>
+            Everything
+          </button>
+        </div>
+      )}
+
         {view.kind === 'search' ? (
           <span className="list-sub" title={view.q}>“{view.q}”</span>
         ) : (
-          unread > 0 && <span className="list-sub">{plural(unread, 'unread', 'unread')}</span>
+          !tabs && unread > 0 && <span className="list-sub">{plural(unread, 'unread', 'unread')}</span>
         )}
         <span style={{ flex: 1 }} />
         <button
@@ -180,20 +199,19 @@ export function MessageList() {
           <RefreshCw size={16} className={list.isFetching && !list.isFetchingNextPage ? 'spin' : ''} />
         </button>
       </div>
-      {tabs && (
-        <div className="tabs" role="tablist" aria-label="Split inbox">
-          {tabs.map((t) => (
-            <button key={t.id} role="tab" aria-selected={activeTab === t.id} className={`tab${activeTab === t.id ? ' active' : ''}`} onClick={() => useUi.getState().setView({ kind: 'mailbox', path: 'INBOX', tab: t.id })}>
-              {t.name}
-            </button>
-          ))}
-          <button role="tab" aria-selected={activeTab === '__all'} className={`tab${activeTab === '__all' ? ' active' : ''}`} onClick={() => useUi.getState().setView({ kind: 'mailbox', path: 'INBOX', tab: '__all' })}>
-            Everything
-          </button>
-        </div>
-      )}
       {selection.size > 0 && <BulkBar count={selection.size} />}
-      <div className="list-scroll" ref={scrollRef} role="listbox" aria-label={`${title} conversations`} aria-multiselectable="true" tabIndex={-1}>
+      <div
+        className="list-scroll"
+        ref={scrollRef}
+        role="listbox"
+        aria-label={`${title} conversations`}
+        aria-multiselectable="true"
+        tabIndex={0}
+        aria-activedescendant={cursor && items.some((i) => i.key === cursor) ? optionId(cursor) : undefined}
+        onFocus={() => {
+          if (!useUi.getState().cursor && items[0]) useUi.getState().setCursor(items[0].key);
+        }}
+      >
         {newPill > 0 && (
           <button
             className="new-pill"
@@ -224,9 +242,9 @@ export function MessageList() {
           ) : (
             <div className="list-empty">
               <div>
-                <Mail size={28} />
-                <h3>Nothing in {title}</h3>
-                <p>{box && box.total > box.synced ? 'Still loading this folder…' : 'Messages you move here will show up in this list.'}</p>
+                <Mail size={28} strokeWidth={1.5} />
+                <h3>{box && box.total > box.synced ? `Loading ${title}…` : EMPTY[box?.role ?? '']?.[0] ?? `${title} is empty`}</h3>
+                <p>{box && box.total > box.synced ? 'Tidings is indexing this folder.' : EMPTY[box?.role ?? '']?.[1] ?? 'Drag conversations here, or press v on any conversation to move it here.'}</p>
               </div>
             </div>
           )
@@ -293,6 +311,14 @@ export function MessageList() {
   );
 }
 
+const EMPTY: Record<string, [string, string]> = {
+  '\\Drafts': ['No drafts', 'Drafts you start are saved here automatically. Press c to write one.'],
+  '\\Sent': ['Nothing sent yet', 'Messages you send appear here.'],
+  '\\Junk': ['No spam', 'Nothing suspicious has arrived. Press ! on a message to mark it as spam.'],
+  '\\Trash': ['Trash is empty', 'Deleted conversations wait here before they are gone for good.'],
+  '\\Archive': ['Nothing archived yet', 'Press e on any conversation to file it here and clear your inbox.'],
+};
+
 function labelFor(b: Mailbox) {
   return ({ '\\Inbox': 'Inbox', '\\Sent': 'Sent', '\\Drafts': 'Drafts', '\\Archive': 'Archive', '\\Junk': 'Spam', '\\Trash': 'Trash' } as Record<string, string>)[b.role ?? ''] ?? b.name;
 }
@@ -357,14 +383,27 @@ const Row = memo(function Row({ item: it, top, height, cursor, open, selected, d
         ? `To: ${displayName(people[0], me)}`
         : displayName(people[0] ?? it.from, me);
   const avatarAddr = sentView ? it.to[0] : it.from;
+  const warning = sentView ? null : senderWarning(it.from);
   const cls = `row${it.unread ? ' unread' : ''}${cursor ? ' cursor' : ''}${selected ? ' selected' : ''}${open ? ' open' : ''}`;
   const compact = density === 'compact';
   return (
     <div
       className={cls}
       role="option"
+      id={optionId(it.key)}
       aria-selected={selected || open}
-      aria-label={`${it.unread ? 'Unread, ' : ''}${who}, ${it.subject || '(no subject)'}, ${listDate(it.date)}`}
+      aria-label={[
+        it.unread ? 'Unread' : '',
+        warning ? `Warning: ${warning}` : '',
+        who,
+        it.subject || '(no subject)',
+        it.count > 1 ? `${it.count} messages` : '',
+        it.flagged ? 'starred' : '',
+        it.hasAttachments ? 'has attachments' : '',
+        listDate(it.date),
+      ]
+        .filter(Boolean)
+        .join(', ')}
       style={{ top, height }}
       onClick={(e) => onClick(e, it)}
       draggable
@@ -377,11 +416,13 @@ const Row = memo(function Row({ item: it, top, height, cursor, open, selected, d
       }}
       onDragEnd={() => setTimeout(() => useUi.getState().setDragItems(null), 50)}
     >
+      {it.unread && <span className="unread-dot" aria-hidden="true" />}
       <div className="lead">
         {showAvatars ? (
           <span className="avatar-slot">
             <Avatar addr={avatarAddr} />
             <button
+ tabIndex={-1}
               className={`check${selected ? ' on' : ''}`}
               aria-label={selected ? 'Deselect' : 'Select'}
               onClick={(e) => {
@@ -394,6 +435,7 @@ const Row = memo(function Row({ item: it, top, height, cursor, open, selected, d
           </span>
         ) : (
           <button
+ tabIndex={-1}
             className={`check${selected ? ' on' : ''}`}
             aria-label={selected ? 'Deselect' : 'Select'}
             onClick={(e) => {
@@ -407,14 +449,18 @@ const Row = memo(function Row({ item: it, top, height, cursor, open, selected, d
       </div>
       <div className="body">
         <div className="line">
-          {it.unread && !showAvatars && <span className="unread-dot" aria-hidden="true" />}
           <bdi className="from">{who}</bdi>
+          {warning && (
+            <span className="sender-warning" title={warning}>
+              <AlertTriangle size={12} /> {it.from.address}
+            </span>
+          )}
           {it.count > 1 && <span className="n">{it.count}</span>}
           {it.draft && <span className="n" style={{ color: 'var(--danger)' }}>Draft</span>}
         </div>
         <div className="line">
           <bdi className="subject">{it.subject || '(no subject)'}</bdi>
-          {(compact || density === 'cozy') && showSnippets && it.snippet && <span className="snippet">— {it.snippet}</span>}
+          {(compact || density === 'cozy') && showSnippets && it.snippet && <span className="snippet">{it.snippet}</span>}
         </div>
         {density === 'comfortable' && showSnippets && (
           <div className="line">
@@ -427,28 +473,24 @@ const Row = memo(function Row({ item: it, top, height, cursor, open, selected, d
         <span className="icons">
           {it.hasAttachments && <Paperclip size={13} aria-label="Has attachments" />}
           {it.flagged && <Star size={13} className="star-on" fill="currentColor" aria-label="Starred" />}
-          {it.unread && showAvatars && <span className="unread-dot" aria-hidden="true" />}
         </span>
       </div>
       <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="icon-btn sm" title="Archive (e)" aria-label="Archive" onClick={() => void archive([it])}><Archive size={15} /></button>
-        <button className="icon-btn sm" title="Delete (#)" aria-label="Delete" onClick={() => void trash([it])}><Trash2 size={15} /></button>
-        <button className="icon-btn sm" title={it.unread ? 'Mark read' : 'Mark unread'} aria-label={it.unread ? 'Mark as read' : 'Mark as unread'} onClick={() => void setRead([it], it.unread)}>
+        <button tabIndex={-1} className="icon-btn sm" title="Archive (e)" aria-label="Archive" onClick={() => void archive([it])}><Archive size={15} /></button>
+        <button tabIndex={-1} className="icon-btn sm" title="Delete (#)" aria-label="Delete" onClick={() => void trash([it])}><Trash2 size={15} /></button>
+        <button tabIndex={-1} className="icon-btn sm" title={it.unread ? 'Mark read' : 'Mark unread'} aria-label={it.unread ? 'Mark as read' : 'Mark as unread'} onClick={() => void setRead([it], it.unread)}>
           {it.unread ? <MailOpen size={15} /> : <Mail size={15} />}
         </button>
         <button
+ tabIndex={-1}
           className="icon-btn sm"
           title="Snooze (h)"
           aria-label="Snooze"
-          onClick={() => {
-            useUi.getState().setCursor(it.key);
-            useUi.getState().clearSelection();
-            useUi.getState().setDialog({ kind: 'snooze' });
-          }}
+          onClick={() => useUi.getState().setDialog({ kind: 'snooze', items: [it] })}
         >
           <Clock size={15} />
         </button>
-        <button className="icon-btn sm" title="Star (s)" aria-label={it.flagged ? 'Unstar' : 'Star'} aria-pressed={it.flagged} onClick={() => void toggleStar([it])}>
+        <button tabIndex={-1} className="icon-btn sm" title="Star (s)" aria-label={it.flagged ? 'Unstar' : 'Star'} aria-pressed={it.flagged} onClick={() => void toggleStar([it])}>
           <Star size={15} fill={it.flagged ? 'currentColor' : 'none'} />
         </button>
       </div>
@@ -457,3 +499,5 @@ const Row = memo(function Row({ item: it, top, height, cursor, open, selected, d
 });
 
 export type { ListPage };
+
+export const optionId = (key: string) => `opt-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`;

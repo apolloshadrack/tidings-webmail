@@ -20,6 +20,7 @@ const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 export const MOD = isMac ? '⌘' : 'Ctrl';
 
 export function describeKey(k: string): string {
+  if (/^[A-Z]$/.test(k)) return `⇧${k}`;
   return k
     .replace('mod+', `${MOD}+`)
     .replace('shift+', '⇧')
@@ -37,7 +38,9 @@ export function normalize(e: KeyboardEvent): string {
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     return `${mod ? 'mod+' : ''}${e.altKey ? 'alt+' : ''}${e.shiftKey ? 'shift+' : ''}${key}`;
   }
-  return e.key; // already reflects shift and keyboard layout ("I", "#", "?")
+  // event.key already reflects Shift and the keyboard layout ("I", "#", "?"); undo Caps Lock for letters.
+  if (e.key.length === 1 && /[a-z]/i.test(e.key) && e.getModifierState?.('CapsLock')) return e.shiftKey ? e.key.toUpperCase() : e.key.toLowerCase();
+  return e.key;
 }
 
 function typingTarget(e: KeyboardEvent): boolean {

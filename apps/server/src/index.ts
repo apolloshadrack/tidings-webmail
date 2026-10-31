@@ -18,6 +18,7 @@ import { mailRoutes } from './http/routes/mail.js';
 import { composeRoutes } from './http/routes/compose.js';
 import { prefsRoutes } from './http/routes/prefs.js';
 import { eventRoutes } from './http/routes/events.js';
+import { extraRoutes } from './http/routes/extras.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -103,6 +104,7 @@ export async function buildServer() {
       composeRoutes(scope, app);
       prefsRoutes(scope, app);
       eventRoutes(scope, app);
+      extraRoutes(scope, app);
     },
     { prefix: cfg.basePath },
   );

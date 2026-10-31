@@ -2,8 +2,8 @@
   "name": "tidings",
   "private": true,
   "version": "0.1.0",
-  "description": "Tidings — fast, keyboard-first, open-source webmail for any IMAP server.",
-  "license": "AGPL-3.0-only",
+  "description": "Tidings \u2014 fast, keyboard-first, open-source webmail for any IMAP server.",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "workspaces": [
     "apps/*"
@@ -20,7 +20,8 @@
     "mail:start": "bash dev/mailserver/start.sh",
     "mail:stop": "bash dev/mailserver/stop.sh",
     "mail:seed": "node dev/mailserver/seed.mjs",
-    "mail:reset": "bash dev/mailserver/reset.sh"
+    "mail:reset": "bash dev/mailserver/reset.sh",
+    "test:e2e": "node scripts/e2e.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

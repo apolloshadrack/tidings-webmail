@@ -1,19 +1,18 @@
 import { type RefObject, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
-  Archive, ChevronDown, ChevronRight, Clock, FileText, Folder, FolderPlus, Inbox, LogOut, Mailbox as MailboxIcon, PanelLeftClose,
-  PanelLeftOpen, Send, Settings as SettingsIcon, ShieldAlert, Star, Trash2, Users, Newspaper, PenLine,
+  Archive, ChevronDown, ChevronRight, Clock, FileText, Folder, FolderPlus, Inbox, Mailbox as MailboxIcon, PanelLeftClose,
+  PanelLeftOpen, Send, ShieldAlert, Star, Trash2, Users, Newspaper, PenLine,
 } from 'lucide-react';
 import { api } from '../api/client';
 import type { Mailbox, ServerConfig, SessionInfo } from '../api/types';
 import { moveTo, emptyFolder } from '../lib/actions';
 import { composeNew } from '../lib/composeActions';
 import { bytes } from '../lib/format';
-import { describeKey } from '../lib/keys';
 import { queryClient, useMailboxes } from '../state/queries';
 import { useSettings } from '../state/settings';
 import { useUi } from '../state/ui';
-import { BrandMark } from './Brand';
+import { Avatar, BrandMark } from './Brand';
 import { Menu, type MenuItem } from './Menu';
 
 const ROLE_ICON: Record<string, typeof Inbox> = {
@@ -204,8 +203,28 @@ export function Sidebar({ session, config }: { session: SessionInfo; config?: Se
           </div>
         )}
         <div className="sidebar-foot">
-          <button className="icon-btn" aria-label="Settings" title={`Settings (${describeKey('g')} ${describeKey(',')})`} onClick={() => useUi.getState().setDialog({ kind: 'settings' })}>
-            <SettingsIcon size={18} />
+          <button
+            className="account-btn"
+            aria-haspopup="menu"
+            aria-label={`Account: ${session.email}`}
+            title={session.email}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              setMenu({
+                x: r.left,
+                y: r.top - 160,
+                items: [
+                  { label: 'Settings', hint: 'g ,', run: () => useUi.getState().setDialog({ kind: 'settings' }) },
+                  { label: 'Identities & signatures', run: () => useUi.getState().setDialog({ kind: 'settings', tab: 'identities' }) },
+                  { label: 'Keyboard shortcuts', hint: '?', run: () => useUi.getState().setDialog({ kind: 'help' }) },
+                  { divider: true },
+                  { label: 'Sign out', run: () => void signOut() },
+                ],
+              });
+            }}
+          >
+            <Avatar addr={{ name: '', address: session.email }} />
+            <span className="addr">{session.email}</span>
           </button>
           <button
             className="icon-btn"
@@ -214,15 +233,6 @@ export function Sidebar({ session, config }: { session: SessionInfo; config?: Se
             onClick={() => setS({ sidebarCollapsed: !collapsed })}
           >
             {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-          </button>
-          <span style={{ flex: 1 }} />
-          <button
-            className="icon-btn"
-            aria-label={`Sign out ${session.email}`}
-            title={`Sign out (${session.email})`}
-            onClick={() => void signOut()}
-          >
-            <LogOut size={18} />
           </button>
         </div>
       </nav>

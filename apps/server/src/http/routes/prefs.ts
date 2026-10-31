@@ -4,7 +4,7 @@ import { getMessage } from '../../imap/message.js';
 import { moveMessages } from '../../imap/ops.js';
 import { syncMailboxList } from '../../imap/sync.js';
 import { hmac, safeEqual } from '../../lib/crypto.js';
-import { EgressError, egressFetch } from '../../lib/egress.js';
+import { egressFetch } from '../../lib/egress.js';
 import { sniffImage } from '../../lib/mime.js';
 import { SCRIPT_NAME, SieveClient, emptyModel, parseModel, renderScript, type TidingsSieve } from '../../mail/sieve.js';
 import { type App, HttpError, accountFor, checkMutation, requireSession, sendError } from '../context.js';
@@ -283,8 +283,9 @@ export function prefsRoutes(f: FastifyInstance, app: App) {
       reply.header('Cross-Origin-Resource-Policy', 'same-origin');
       return reply.send(r.body);
     } catch (err) {
-      if (err instanceof EgressError) return reply.code(404).send();
-      return sendError(reply, err);
+      // Every failure looks the same, so the proxy cannot be used to probe what is reachable.
+      if (err instanceof HttpError && err.status === 401) return sendError(reply, err);
+      return reply.code(404).send();
     }
   });
 
@@ -321,7 +322,38 @@ export function prefsRoutes(f: FastifyInstance, app: App) {
          ON CONFLICT(user_key, message_id) DO UPDATE SET wake_at = excluded.wake_at, from_mailbox = excluded.from_mailbox`,
       );
       for (const row of rows) if (row.message_id) ins.run(s.userKey, row.message_id, b.mailbox, b.until, Date.now());
-      return { ok: true, folder: snoozed, uidMap: r.uidMap };
+      return { ok: true, folder: snoozed, uidMap: r.uidMap, messageIds: rows.map((x) => x.message_id).filter(Boolean) };
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  /** Undo a snooze: move the messages back to where they came from and forget the wake-up. */
+  f.post('/api/snooze/cancel', async (req, reply) => {
+    try {
+      const s = requireSession(app, req);
+      checkMutation(app, req, s);
+      const { messageIds } = z.object({ messageIds: z.array(z.string().max(1000)).min(1).max(500) }).parse(req.body);
+      const acc = accountFor(app, s, req.ip);
+      const byBox = new Map<string, { from: string; uidValidity: string; uids: number[] }>();
+      for (const id of messageIds) {
+        const sn = app.db.prepare('SELECT from_mailbox FROM snoozes WHERE user_key = ? AND message_id = ?').get(s.userKey, id) as { from_mailbox: string } | undefined;
+        const m = app.db.prepare(`SELECT mailbox, uid, uid_validity FROM messages WHERE user_key = ? AND message_id = ? AND mailbox = 'Snoozed'`).get(s.userKey, id) as
+          | { mailbox: string; uid: number; uid_validity: string }
+          | undefined;
+        app.db.prepare('DELETE FROM snoozes WHERE user_key = ? AND message_id = ?').run(s.userKey, id);
+        if (!m || !sn) continue;
+        const k = `${sn.from_mailbox}\0${m.uid_validity}`;
+        const g = byBox.get(k) ?? { from: sn.from_mailbox, uidValidity: m.uid_validity, uids: [] };
+        g.uids.push(m.uid);
+        byBox.set(k, g);
+      }
+      let moved = 0;
+      for (const g of byBox.values()) {
+        await moveMessages(acc, app.db, { mailbox: 'Snoozed', uidValidity: g.uidValidity, uids: g.uids }, g.from);
+        moved += g.uids.length;
+      }
+      return { ok: true, moved };
     } catch (err) {
       return sendError(reply, err);
     }

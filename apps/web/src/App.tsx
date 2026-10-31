@@ -3,7 +3,7 @@ import { onAuthLost, setCsrf } from './api/client';
 import { Login } from './components/Login';
 import { Shell } from './components/Shell';
 import { queryClient, useConfig, useSession } from './state/queries';
-import { useSettings } from './state/settings';
+import { setBrandAccent, useSettings } from './state/settings';
 
 export function App() {
   const config = useConfig();
@@ -24,6 +24,8 @@ export function App() {
       }),
     [],
   );
+
+  useEffect(() => setBrandAccent(config.data?.brand.accent), [config.data?.brand.accent]);
 
   useEffect(() => {
     const css = config.data?.brand.customCss;

@@ -6,3 +6,4 @@ data/
 .DS_Store
 dev/mailserver/run/
 coverage/
+.claude/

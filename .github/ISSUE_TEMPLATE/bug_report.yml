@@ -1,0 +1,15 @@
+name: Bug report
+description: Something in Tidings does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    attributes: { label: What happened, description: "What did you do, what did you expect, what happened instead?" }
+    validations: { required: true }
+  - type: input
+    attributes: { label: Tidings version, placeholder: "0.1.0 / commit sha / image tag" }
+  - type: input
+    attributes: { label: Mail server, placeholder: "Dovecot 2.3, Stalwart, Mailcow, cPanel…" }
+  - type: textarea
+    attributes: { label: Output of `tidings doctor`, render: text }
+  - type: textarea
+    attributes: { label: Browser and OS }

@@ -21,7 +21,12 @@ const BLOCKED_RANGES = new Set([
 export function isPublicAddress(ip: string): boolean {
   try {
     let addr = ipaddr.parse(ip);
-    if (addr.kind() === 'ipv6' && (addr as ipaddr.IPv6).isIPv4MappedAddress()) addr = (addr as ipaddr.IPv6).toIPv4Address();
+    if (addr.kind() === 'ipv6') {
+      const v6 = addr as ipaddr.IPv6;
+      // IPv4-compatible (::a.b.c.d, deprecated) and other zero-prefixed forms can reach IPv4 space.
+      if (v6.parts.slice(0, 6).every((p) => p === 0)) return false;
+      if (v6.isIPv4MappedAddress()) addr = v6.toIPv4Address();
+    }
     const range = addr.range();
     if (BLOCKED_RANGES.has(range)) return false;
     if (addr.kind() === 'ipv4') {

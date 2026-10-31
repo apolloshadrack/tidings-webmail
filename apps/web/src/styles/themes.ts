@@ -164,7 +164,7 @@ export const THEMES: Theme[] = [
   },
 ];
 
-export const ACCENTS = ['#4f46e5', '#2563eb', '#0891b2', '#0d9488', '#16a34a', '#ca8a04', '#ea580c', '#dc2626', '#db2777', '#9333ea'];
+export const ACCENTS = ['#6d4aff', '#2563eb', '#0891b2', '#0d9488', '#16a34a', '#ca8a04', '#ea580c', '#dc2626', '#db2777', '#9333ea'];
 
 function luminance(hex: string): number {
   const n = hex.replace('#', '');

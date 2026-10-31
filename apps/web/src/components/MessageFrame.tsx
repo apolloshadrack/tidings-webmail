@@ -97,7 +97,11 @@ export function MessageFrame({ msg, allowImages, colorMode, onInfo }: { msg: Ful
       ro = new ResizeObserver(measure);
       ro.observe(doc.documentElement);
       doc.querySelectorAll('img').forEach((img) => img.addEventListener('load', measure, { once: true }));
-      doc.addEventListener('click', (e) => {
+      // Middle-click and modifier-clicks go through the same confirmation (auxclick + mousedown).
+      doc.addEventListener('mousedown', (e) => {
+        if (e.button === 1 && (e.target as Element).closest?.('a[href]')) e.preventDefault();
+      });
+      const onLink = (e: MouseEvent) => {
         const a = (e.target as Element).closest?.('a[href]') as HTMLAnchorElement | null;
         if (!a) return;
         e.preventDefault();
@@ -113,7 +117,9 @@ export function MessageFrame({ msg, allowImages, colorMode, onInfo }: { msg: Ful
         } else {
           window.open(href, '_blank', 'noopener,noreferrer');
         }
-      });
+      };
+      doc.addEventListener('click', onLink);
+      doc.addEventListener('auxclick', onLink);
       // Keyboard shortcuts keep working while focus is inside the message.
       doc.addEventListener('keydown', (e) => {
         if (e.key === 'Tab') return;

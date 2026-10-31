@@ -14,7 +14,7 @@ export interface ParsedQuery {
 
 function tokenize(q: string): string[] {
   const out: string[] = [];
-  const re = /(-?[a-z]+:)?("([^"]*)"|\S+)/gi;
+  const re = /(-?[a-z_]+:)?("([^"]*)"|\S+)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(q))) out.push(m[0]);
   return out;
@@ -49,7 +49,7 @@ export function parseSearch(q: string, mailboxRoles: Map<string, string>): Parse
   let mailbox: string | undefined;
   let hasFolderScope = false;
   for (const tok of tokenize(q.trim())) {
-    const m = /^(-?)([a-z]+):(.+)$/i.exec(tok);
+    const m = /^(-?)([a-z_]+):(.+)$/i.exec(tok);
     if (!m) {
       freeText.push(unquote(tok));
       continue;
@@ -72,6 +72,7 @@ export function parseSearch(q: string, mailboxRoles: Map<string, string>): Parse
       case 'subject':
         add('lower(m.subject) LIKE ?', lv);
         break;
+      case 'label':
       case 'in': {
         hasFolderScope = true;
         const role = { inbox: '\\Inbox', sent: '\\Sent', drafts: '\\Drafts', trash: '\\Trash', spam: '\\Junk', junk: '\\Junk', archive: '\\Archive' }[
@@ -82,8 +83,13 @@ export function parseSearch(q: string, mailboxRoles: Map<string, string>): Parse
           where.push('1=1');
           break;
         }
-        const path = role ? [...mailboxRoles].find(([, r]) => r === role)?.[0] : val;
-        mailbox = path ?? val;
+        const path = role ? [...mailboxRoles].find(([, r]) => r === role)?.[0] : undefined;
+        if (path) mailbox = path;
+        else {
+          // Folders match case-insensitively by full path or by their last segment.
+          where.push("(lower(m.mailbox) = ? OR lower(m.mailbox) LIKE ? OR lower(m.mailbox) LIKE ?)");
+          params.push(val.toLowerCase(), `%/${val.toLowerCase()}`, `%.${val.toLowerCase()}`);
+        }
         break;
       }
       case 'is':
@@ -125,6 +131,16 @@ export function parseSearch(q: string, mailboxRoles: Map<string, string>): Parse
       case 'after': {
         const d = parseDate(val);
         if (d) add('m.date >= ?', d);
+        break;
+      }
+      case 'older_than':
+      case 'newer_than': {
+        const m2 = /^(\d+)([dwmy])$/i.exec(val);
+        if (m2) {
+          const days = Number(m2[1]) * { d: 1, w: 7, m: 30, y: 365 }[m2[2].toLowerCase() as 'd' | 'w' | 'm' | 'y'];
+          const cutoff = Date.now() - days * 86_400_000;
+          add(key === 'older_than' ? 'm.date < ?' : 'm.date >= ?', cutoff);
+        }
         break;
       }
       case 'larger': {

@@ -90,6 +90,8 @@ export class Account extends EventEmitter {
       tls: this.tlsOptions(),
       logger: false,
       disableAutoIdle: kind !== 'idle',
+      // The IDLE connection does nothing else: start IDLE right away so new mail shows up in ~1s, not 15s.
+      autoIdleDelay: kind === 'idle' ? 300 : undefined,
       maxIdleTime: 4 * 60_000,
       qresync: false,
       connectionTimeout: 20_000,
@@ -145,7 +147,7 @@ export class Account extends EventEmitter {
     try {
       return await fn(worker.client);
     } catch (err) {
-      if (!worker.client.usable) this.drop(worker);
+      if (!worker.client?.usable) this.drop(worker);
       throw err;
     } finally {
       this.release(worker);
@@ -153,12 +155,12 @@ export class Account extends EventEmitter {
   }
 
   private async acquire(priority: number): Promise<Worker> {
-    const free = this.workers.find((w) => !w.busy && w.client.usable);
+    const free = this.workers.find((w) => !w.busy && w.client?.usable);
     if (free) {
       free.busy = true;
       return free;
     }
-    this.workers = this.workers.filter((w) => w.client.usable || w.busy);
+    this.workers = this.workers.filter((w) => w.busy || w.client?.usable);
     if (this.workers.length < MAX_WORKERS) {
       const placeholder: Worker = { client: null as unknown as ImapFlow, busy: true, lastUsed: Date.now() };
       this.workers.push(placeholder);
@@ -184,7 +186,7 @@ export class Account extends EventEmitter {
     }
     const next = this.waiters.shift();
     if (next) {
-      if (worker.client.usable) {
+      if (worker.client?.usable) {
         next.resolve(worker);
         return;
       }
@@ -203,7 +205,7 @@ export class Account extends EventEmitter {
   private drop(worker: Worker) {
     this.workers = this.workers.filter((w) => w !== worker);
     try {
-      worker.client.close();
+      worker.client?.close();
     } catch {
       /* ignore */
     }
@@ -215,7 +217,7 @@ export class Account extends EventEmitter {
     for (const w of [...this.workers]) {
       if (!w.busy && now - w.lastUsed > WORKER_IDLE_MS) {
         this.workers = this.workers.filter((x) => x !== w);
-        w.client.logout().catch(() => w.client.close());
+        w.client?.logout().catch(() => w.client?.close());
       }
     }
   }
@@ -243,7 +245,11 @@ export class Account extends EventEmitter {
       const client = await this.connect('idle');
       this.idleClient = client;
       await client.mailboxOpen('INBOX', { readOnly: true });
-      const changed = () => this.emit('inbox-changed');
+      this.log.info({ user: this.username }, 'idle connection ready');
+      const changed = () => {
+        this.log.info({ user: this.username }, 'idle: inbox changed');
+        this.emit('inbox-changed');
+      };
       client.on('exists', changed);
       client.on('expunge', changed);
       client.on('flags', changed);

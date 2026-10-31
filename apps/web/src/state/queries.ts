@@ -38,7 +38,7 @@ export function listParams(view: View): ListParams | null {
     const tab = view.path === 'INBOX' && s.splitInbox && tabId !== '__all' ? s.splitTabs.find((t) => t.id === tabId) : undefined;
     return { mailbox: view.path, filter: tab?.query, threads: s.conversations };
   }
-  if (view.kind === 'search') return { q: view.q, threads: false };
+  if (view.kind === 'search') return { q: view.q, threads: s.conversations };
   return null;
 }
 

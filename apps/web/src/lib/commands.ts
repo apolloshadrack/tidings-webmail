@@ -12,6 +12,27 @@ const byRole = (role: string) => boxes().find((b) => b.role === role)?.path;
 const noDialog = () => !ui().dialog;
 const hasTarget = () => noDialog() && actionItems().length > 0;
 const inReader = () => noDialog() && !!ui().open;
+const inList = () => noDialog() && (ui().view.kind === 'mailbox' || ui().view.kind === 'search');
+
+function extendSelection(delta: number) {
+  const st = ui();
+  const items = st.visibleItems;
+  const idx = items.findIndex((i) => i.key === st.cursor);
+  if (idx < 0) return;
+  if (!st.selection.has(items[idx].key)) st.toggleSelect(items[idx].key);
+  const next = items[idx + delta];
+  if (!next) return;
+  if (!st.selection.has(next.key)) st.toggleSelect(next.key);
+  st.setCursor(next.key);
+}
+
+function archiveAndGo(dir: 'next' | 'previous') {
+  const prev = settings().afterAction;
+  useSettings.setState((st) => ({ s: { ...st.s, afterAction: dir } }));
+  // advanceAfterRemoval reads afterAction synchronously, so we can restore it right away.
+  void archive();
+  useSettings.setState((st) => ({ s: { ...st.s, afterAction: prev } }));
+}
 
 function goRole(role: string, fallback?: string) {
   const path = byRole(role) ?? fallback;
@@ -27,13 +48,23 @@ function moveCursor(delta: number) {
   if (!next) return;
   if (st.open && st.focusZone === 'reader') st.setOpen(next.key);
   else st.setCursor(next.key);
+  focusList();
+}
+
+/** Keep focus on the listbox so assistive tech follows aria-activedescendant. */
+function focusList() {
+  const a = document.activeElement as HTMLElement | null;
+  if (a && (a.tagName === 'IFRAME' || a.isContentEditable || /INPUT|TEXTAREA|SELECT/.test(a.tagName))) return;
+  document.querySelector<HTMLElement>('.list-scroll')?.focus({ preventScroll: true });
 }
 
 export function buildCommands(): Command[] {
   const list: Command[] = [
     // Navigate
-    { id: 'down', title: 'Next conversation', group: 'Navigate', keys: ['j'], alt: [['ArrowDown']], when: noDialog, run: () => moveCursor(1) },
-    { id: 'up', title: 'Previous conversation', group: 'Navigate', keys: ['k'], alt: [['ArrowUp']], when: noDialog, run: () => moveCursor(-1) },
+    { id: 'down', title: 'Next conversation', group: 'Navigate', keys: ['j'], alt: [['ArrowDown']], when: inList, run: () => moveCursor(1) },
+    { id: 'up', title: 'Previous conversation', group: 'Navigate', keys: ['k'], alt: [['ArrowUp']], when: inList, run: () => moveCursor(-1) },
+    { id: 'extend-down', title: 'Extend selection down', group: 'Navigate', keys: ['J'], when: inList, run: () => extendSelection(1) },
+    { id: 'extend-up', title: 'Extend selection up', group: 'Navigate', keys: ['K'], when: inList, run: () => extendSelection(-1) },
     {
       id: 'open', title: 'Open conversation', group: 'Navigate', keys: ['Enter'], alt: [['o']],
       when: () => noDialog() && !!ui().cursor && ui().focusZone === 'list',
@@ -47,14 +78,16 @@ export function buildCommands(): Command[] {
         else ui().setOpen(null);
       },
     },
-    { id: 'select', title: 'Select conversation', group: 'Navigate', keys: ['x'], when: () => noDialog() && !!ui().cursor, run: () => ui().toggleSelect(ui().cursor!) },
-    { id: 'select-all', title: 'Select all', group: 'Navigate', keys: ['*', 'a'], when: noDialog, run: () => ui().selectAll() },
+    { id: 'select', title: 'Select conversation', group: 'Navigate', keys: ['x'], when: () => inList() && !!ui().cursor, run: () => ui().toggleSelect(ui().cursor!) },
+    { id: 'select-all', title: 'Select all', group: 'Navigate', keys: ['*', 'a'], when: inList, run: () => ui().selectAll() },
     { id: 'search', title: 'Search mail', group: 'Navigate', keys: ['/'], when: noDialog, run: () => ui().focusSearch() },
     { id: 'expand', title: 'Expand all messages', group: 'View', keys: [';'], when: inReader, run: () => window.dispatchEvent(new CustomEvent('tidings:expand-all')) },
     { id: 'sender', title: 'Show sender details', group: 'View', keys: ['i'], when: inReader, run: () => window.dispatchEvent(new CustomEvent('tidings:sender-panel')) },
 
     // Triage
     { id: 'archive', title: 'Archive', group: 'Triage', keys: ['e'], alt: [['y']], when: hasTarget, run: () => void archive() },
+    { id: 'archive-next', title: 'Archive and open older', group: 'Triage', keys: [']'], when: hasTarget, run: () => archiveAndGo('next') },
+    { id: 'archive-prev', title: 'Archive and open newer', group: 'Triage', keys: ['['], when: hasTarget, run: () => archiveAndGo('previous') },
     { id: 'trash', title: 'Delete', group: 'Triage', keys: ['#'], alt: [['Delete'], ['Backspace']], when: hasTarget, run: () => void trash() },
     { id: 'junk', title: 'Mark as spam / not spam', group: 'Triage', keys: ['!'], when: hasTarget, run: () => void junk() },
     { id: 'move', title: 'Move to folder…', group: 'Triage', keys: ['v'], when: hasTarget, run: () => ui().setDialog({ kind: 'move', mode: 'move' }) },
@@ -97,7 +130,7 @@ export function buildCommands(): Command[] {
       },
     },
     { id: 'toggle-conv', title: 'Toggle conversation view', group: 'View', paletteOnly: true, run: () => useSettings.getState().set({ conversations: !settings().conversations }) },
-    { id: 'toggle-sidebar', title: 'Toggle sidebar', group: 'View', keys: ['['], when: noDialog, run: () => useSettings.getState().set({ sidebarCollapsed: !settings().sidebarCollapsed }) },
+    { id: 'toggle-sidebar', title: 'Toggle sidebar', group: 'View', keys: ['mod+\\'], when: noDialog, run: () => useSettings.getState().set({ sidebarCollapsed: !settings().sidebarCollapsed }) },
     {
       id: 'layout', title: 'Cycle reading pane layout', group: 'View', paletteOnly: true, keywords: 'split rows columns',
       run: () => {

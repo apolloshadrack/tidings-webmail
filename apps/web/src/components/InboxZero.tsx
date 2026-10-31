@@ -2,7 +2,7 @@ import { Horizon } from './Login';
 
 const LINES = [
   ['Inbox zero.', 'Nothing needs you right now.'],
-  ['All clear.', 'Go do something wonderful.'],
+  ['All clear.', 'Everything has been answered, filed or snoozed.'],
   ['You’re caught up.', 'New mail will appear here the moment it lands.'],
 ];
 
@@ -11,7 +11,7 @@ export function InboxZero({ tab }: { tab?: string }) {
   return (
     <div className="zero">
       <div>
-        <div style={{ width: 'min(340px, 80%)', margin: '0 auto', aspectRatio: '4 / 3', borderRadius: 18, overflow: 'hidden', boxShadow: 'var(--shadow-2)' }} aria-hidden="true">
+        <div className="zero-art" aria-hidden="true">
           <Horizon />
         </div>
         <h3>{tab ? `Nothing in ${tab}` : title}</h3>

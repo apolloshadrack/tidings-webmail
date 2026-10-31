@@ -11,7 +11,11 @@ export function Menu({ x, y, items, onClose }: { x: number; y: number; items: Me
   const [pos, setPos] = useState({ x, y });
   const [sub, setSub] = useState<{ items: MenuItem[]; x: number; y: number } | null>(null);
 
+  const opener = useRef<HTMLElement | null>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useLayoutEffect(() => {
+    opener.current ??= document.activeElement as HTMLElement | null;
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
@@ -21,21 +25,23 @@ export function Menu({ x, y, items, onClose }: { x: number; y: number; items: Me
 
   useEffect(() => {
     const down = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node) && !(e.target as HTMLElement).closest?.('.menu')) onClose();
+      if (!ref.current?.contains(e.target as Node) && !(e.target as HTMLElement).closest?.('.menu')) closeRef.current();
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        closeRef.current();
       }
     };
     window.addEventListener('mousedown', down);
     window.addEventListener('keydown', key, true);
+    const toRestore = opener.current;
     return () => {
       window.removeEventListener('mousedown', down);
       window.removeEventListener('keydown', key, true);
+      if (toRestore && document.contains(toRestore) && !document.querySelector('.menu')) toRestore.focus?.();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <>
@@ -43,6 +49,7 @@ export function Menu({ x, y, items, onClose }: { x: number; y: number; items: Me
         ref={ref}
         className="menu"
         role="menu"
+        aria-label="Actions"
         style={{ left: pos.x, top: pos.y }}
         onKeyDown={(e) => {
           const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
@@ -53,6 +60,12 @@ export function Menu({ x, y, items, onClose }: { x: number; y: number; items: Me
           } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             buttons[(i - 1 + buttons.length) % buttons.length]?.focus();
+          } else if (e.key === 'ArrowRight' && document.activeElement?.getAttribute('aria-haspopup')) {
+            e.preventDefault();
+            (document.activeElement as HTMLButtonElement).click();
+          } else if (e.key === 'ArrowLeft' && sub) {
+            e.preventDefault();
+            setSub(null);
           }
           e.stopPropagation();
         }}
@@ -64,6 +77,8 @@ export function Menu({ x, y, items, onClose }: { x: number; y: number; items: Me
             <button
               key={i}
               role="menuitem"
+              aria-label={it.label}
+              aria-haspopup={it.submenu ? 'menu' : undefined}
               style={it.danger ? { color: 'var(--danger)' } : undefined}
               onMouseEnter={(e) => {
                 if (it.submenu) {

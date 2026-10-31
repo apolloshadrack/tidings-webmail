@@ -283,13 +283,22 @@ export interface SyncResult {
  *  - CONDSTORE CHANGEDSINCE (or a full FLAGS rescan) -> flag changes
  *  - newest FIRST_CHUNK missing messages now, the rest in background chunks
  */
+const rerun = new Set<string>();
+
 export function syncMailbox(acc: Account, db: DB, path: string, priority = 5): Promise<SyncResult> {
   const key = `${acc.userKey}\0${path}`;
   const running = inflight.get(key);
-  if (running) return running;
+  if (running) {
+    // A sync is already underway but may have started before this change: run once more after it.
+    rerun.add(key);
+    return running;
+  }
   const p = acc
     .run((client) => syncMailboxNow(acc, db, client, path), priority)
-    .finally(() => inflight.delete(key));
+    .finally(() => {
+      inflight.delete(key);
+      if (rerun.delete(key)) void syncMailbox(acc, db, path, priority).catch(() => undefined);
+    });
   inflight.set(key, p);
   return p;
 }
@@ -298,6 +307,9 @@ async function syncMailboxNow(acc: Account, db: DB, client: ImapFlow, path: stri
   const lock = await client.getMailboxLock(path, { readOnly: true });
   const result: SyncResult = { added: 0, removed: 0, updated: 0, pending: 0 };
   try {
+    // A pooled connection may have had this folder selected for a while without hearing about new
+    // mail; NOOP makes the server report EXISTS/EXPUNGE so the view below is current.
+    await client.noop();
     const mb = client.mailbox;
     if (!mb) throw new Error('mailbox not selected');
     const uidValidity = mb.uidValidity.toString();

@@ -4,14 +4,15 @@ import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Image from '@tiptap/extension-image';
 import {
-  Bold, ChevronDown, Italic, Link2, List, ListOrdered, Loader2, Maximize2, Minimize2, Minus, Paperclip, Quote, Send, Strikethrough, Trash2,
-  Type, Underline as UnderlineIcon, X, FileText, Sparkles, RemoveFormatting,
+  Bold, Italic, Link2, List, ListOrdered, Loader2, Maximize2, Minimize2, Minus, Paperclip, Quote, Send, Strikethrough, Trash2,
+  Type, Underline as UnderlineIcon, X, FileText, TextQuote, RemoveFormatting, MoreHorizontal, SquareArrowOutUpRight,
 } from 'lucide-react';
-import { ApiError, api, qs } from '../api/client';
+import { api, qs } from '../api/client';
 import type { Address, ComposeState, Identity } from '../api/types';
 import { htmlToPlain, isEmail, mentionsAttachment, parseAddressList, signatureFor } from '../lib/compose';
 import { bytes, displayName } from '../lib/format';
 import { MOD } from '../lib/keys';
+import { runUndo } from '../lib/actions';
 import { sanitizeForComposer } from '../lib/sanitize';
 import { queryClient, useIdentities, useSnippets } from '../state/queries';
 import { useSettings } from '../state/settings';
@@ -101,6 +102,17 @@ function ComposerBody({ w, inline, max, setMax }: { w: ComposerWindow; inline: b
   const root = useRef<HTMLDivElement>(null);
   const dirty = useRef(false);
   const lastSync = useRef(0);
+
+  useEffect(() => {
+    if (!inline || !root.current) return;
+    const sc = root.current.closest('.reader-scroll');
+    if (!sc) return;
+    requestAnimationFrame(() => {
+      const r = root.current!.getBoundingClientRect();
+      const box = sc.getBoundingClientRect();
+      if (r.bottom > box.bottom) sc.scrollTo({ top: sc.scrollTop + (r.bottom - box.bottom) + 16 });
+    });
+  }, [inline]);
 
   const editor = useEditor({
     extensions: [
@@ -251,24 +263,22 @@ function ComposerBody({ w, inline, max, setMax }: { w: ComposerWindow; inline: b
       useUi.getState().closeComposer(id);
       void queryClient.invalidateQueries({ queryKey: ['outbox'] });
       if (s.undoSendSeconds > 0) {
-        const tid = useUi.getState().pushToast({
-          message: `Sending in ${s.undoSendSeconds}s…`,
+        const cancelSend = async () => {
+          try {
+            await api(`/api/outbox/${r.id}/cancel`, { body: {} });
+            const back = sentWindows.get(r.id);
+            if (back) useUi.getState().openComposer({ ...back, minimized: false, focus: 'body' });
+          } finally {
+            void queryClient.invalidateQueries({ queryKey: ['outbox'] });
+          }
+        };
+        // z / ⌘Z also cancels the send while the window is open; the toast is never replaced.
+        const undoId = useUi.getState().pushUndo({ label: 'Send', undo: cancelSend });
+        useUi.getState().pushToast({
+          message: 'Sending…',
           ttl: s.undoSendSeconds * 1000,
-          action: {
-            label: 'Undo',
-            run: async () => {
-              useUi.getState().dismissToast(tid);
-              try {
-                await api(`/api/outbox/${r.id}/cancel`, { body: {} });
-                const back = sentWindows.get(r.id);
-                if (back) useUi.getState().openComposer({ ...back, minimized: false, focus: 'body' });
-                useUi.getState().pushToast({ message: 'Sending cancelled — back to your draft' });
-              } catch (err) {
-                useUi.getState().pushToast({ message: (err as ApiError).message, tone: 'error' });
-              }
-              void queryClient.invalidateQueries({ queryKey: ['outbox'] });
-            },
-          },
+          keep: true,
+          action: { label: 'Undo', run: () => void runUndo(undoId) },
         });
       }
     } catch (err) {
@@ -312,11 +322,28 @@ function ComposerBody({ w, inline, max, setMax }: { w: ComposerWindow; inline: b
       e.preventDefault();
       e.stopPropagation();
       if (linkOpen) setLinkOpen(false);
-      else update({ minimized: true });
+      else {
+        update({ minimized: true });
+        // Return focus somewhere sensible instead of <body>.
+        setTimeout(() => document.querySelector<HTMLElement>('.list-scroll, .reader-scroll')?.focus({ preventScroll: true }), 0);
+      }
+    } else if (mod && e.shiftKey && (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'b')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const which = e.key.toLowerCase() === 'c' ? 'Cc' : 'Bcc';
+      if (which === 'Cc') setShowCc(true);
+      else setShowBcc(true);
+      setTimeout(() => root.current?.querySelector<HTMLInputElement>(`input[aria-label="${which} recipients"]`)?.focus(), 0);
     } else if (mod && e.key.toLowerCase() === 'k' && !e.shiftKey && (e.target as HTMLElement).closest('.editor')) {
       e.preventDefault();
       e.stopPropagation();
       setLinkOpen(true);
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === 'd') {
+      e.preventDefault();
+      e.stopPropagation();
+      discard();
+    } else if (mod && (e.key.toLowerCase() === 'k' || e.key === '/')) {
+      // global combos (palette, help) still work from any composer field
     } else {
       e.stopPropagation(); // typing in the composer never triggers mailbox shortcuts
     }
@@ -377,8 +404,8 @@ function ComposerBody({ w, inline, max, setMax }: { w: ComposerWindow; inline: b
           <label>To</label>
           <RecipientField value={w.state.to} onChange={(to) => { dirty.current = true; setState({ to }); }} autoFocus={w.focus === 'to'} label="To" />
           <div className="extras">
-            {!showCc && <button onClick={() => setShowCc(true)}>Cc</button>}
-            {!showBcc && <button onClick={() => setShowBcc(true)}>Bcc</button>}
+            {!showCc && <button tabIndex={-1} title={`Add Cc (${MOD}⇧C)`} onClick={() => setShowCc(true)}>Cc</button>}
+            {!showBcc && <button tabIndex={-1} title={`Add Bcc (${MOD}⇧B)`} onClick={() => setShowBcc(true)}>Bcc</button>}
           </div>
         </div>
         {showCc && (
@@ -449,13 +476,13 @@ function ComposerBody({ w, inline, max, setMax }: { w: ComposerWindow; inline: b
         <span className="send-btn">
           <button className="btn primary" onClick={() => void send()} disabled={sending} title={`Send (${MOD}+Enter)`}>
             {sending ? <Loader2 size={15} className="spin" /> : <Send size={15} />} Send
+            <kbd style={{ marginLeft: 6, background: 'color-mix(in oklab, var(--accent-text) 18%, transparent)', color: 'var(--accent-text)', boxShadow: 'none' }}>{MOD}↵</kbd>
           </button>
         </span>
-        <span className="hint" style={{ marginLeft: 8 }}>{MOD}↵</span>
         <span className="spacer" />
         <input ref={fileInput} type="file" multiple hidden onChange={(e) => { void upload([...(e.target.files ?? [])]); e.target.value = ''; }} />
         <button className="icon-btn" aria-label="Attach files" title="Attach files" onClick={() => fileInput.current?.click()}><Paperclip size={17} /></button>
-        <button className="icon-btn" aria-label="Insert snippet" title="Insert snippet" onClick={insertSnippet}><Sparkles size={17} /></button>
+        <button className="icon-btn" aria-label="Insert snippet" title="Insert snippet" onClick={insertSnippet}><TextQuote size={17} /></button>
         <button
           className="icon-btn"
           aria-pressed={plain}
@@ -473,14 +500,27 @@ function ComposerBody({ w, inline, max, setMax }: { w: ComposerWindow; inline: b
         >
           <Type size={17} />
         </button>
-        <label className="check-row" style={{ fontSize: 12.5, marginLeft: 4 }} title="Ask the recipient's mail app to confirm it was read">
-          <input type="checkbox" checked={w.state.requestReceipt} onChange={(e) => setState({ requestReceipt: e.target.checked })} />
-          Receipt
-        </label>
+        <button
+          className="icon-btn"
+          aria-label="More options"
+          aria-haspopup="menu"
+          onClick={(e) =>
+            setMenu({
+              x: e.clientX - 180,
+              y: e.clientY - 90,
+              items: [
+                { label: w.state.requestReceipt ? '✓ Request read receipt' : 'Request read receipt', run: () => setState({ requestReceipt: !w.state.requestReceipt }) },
+                { label: showBcc ? 'Bcc shown' : 'Add Bcc', run: () => setShowBcc(true) },
+              ],
+            })
+          }
+        >
+          <MoreHorizontal size={17} />
+        </button>
         <button className="icon-btn" aria-label="Discard draft" title="Discard" onClick={discard}><Trash2 size={17} /></button>
         {inline && (
           <button className="icon-btn" aria-label="Pop out" title="Pop out" onClick={() => update({ inlineThread: undefined })}>
-            <ChevronDown size={17} style={{ transform: 'rotate(-135deg)' }} />
+            <SquareArrowOutUpRight size={16} />
           </button>
         )}
       </div>
@@ -571,6 +611,7 @@ function RecipientField({ value, onChange, autoFocus, label }: { value: Address[
   const [active, setActive] = useState(0);
   const [selectedChip, setSelectedChip] = useState<number | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  const listId = useMemo(() => `sugg-${label}-${Math.random().toString(36).slice(2, 8)}`, [label]);
 
   useEffect(() => {
     const q = text.trim();
@@ -616,6 +657,7 @@ function RecipientField({ value, onChange, autoFocus, label }: { value: Address[
         <span key={`${a.address}-${i}`} className={`rchip${isEmail(a.address) ? '' : ' invalid'}${selectedChip === i ? ' selected' : ''}`} title={a.address}>
           <span>{a.name ? displayName(a) : a.address}</span>
           <button
+            tabIndex={-1}
             aria-label={`Remove ${a.address}`}
             onClick={(e) => {
               e.stopPropagation();
@@ -631,6 +673,10 @@ function RecipientField({ value, onChange, autoFocus, label }: { value: Address[
         value={text}
         autoFocus={autoFocus}
         aria-label={`${label} recipients`}
+        role="combobox"
+        aria-expanded={sugg.length > 0}
+        aria-controls={listId}
+        aria-activedescendant={sugg.length ? `${listId}-${active}` : undefined}
         aria-autocomplete="list"
         onChange={(e) => {
           setSelectedChip(null);
@@ -678,9 +724,9 @@ function RecipientField({ value, onChange, autoFocus, label }: { value: Address[
         }, 150)}
       />
       {sugg.length > 0 && (
-        <div className="suggest" role="listbox">
+        <div className="suggest" role="listbox" id={listId}>
           {sugg.map((sg, i) => (
-            <button key={sg.address} role="option" aria-selected={i === active} className={i === active ? 'active' : ''} onMouseDown={(e) => e.preventDefault()} onClick={() => add([sg])}>
+            <button key={sg.address} id={`${listId}-${i}`} tabIndex={-1} role="option" aria-selected={i === active} className={i === active ? 'active' : ''} onMouseDown={(e) => e.preventDefault()} onClick={() => add([sg])}>
               <Avatar addr={sg} />
               <span>
                 {sg.name || sg.address}

@@ -19,7 +19,7 @@ createRoot(document.getElementById('root')!).render(
 );
 
 if (import.meta.env.DEV) {
-  void import('./state/ui').then(({ useUi }) => {
-    (window as unknown as { __tidings: unknown }).__tidings = { useUi };
+  void Promise.all([import('./state/ui'), import('./state/settings')]).then(([{ useUi }, { useSettings }]) => {
+    (window as unknown as { __tidings: unknown }).__tidings = { useUi, useSettings };
   });
 }

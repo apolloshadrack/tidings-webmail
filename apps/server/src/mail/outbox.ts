@@ -10,7 +10,7 @@ import { openPart } from '../imap/message.js';
 import { appendMessage, expungeUidIfSafe, setFlags } from '../imap/ops.js';
 import { syncMailbox } from '../imap/sync.js';
 import { open, seal } from '../lib/crypto.js';
-import { cleanHeaderValue } from '../lib/mime.js';
+import { cleanHeaderValue, sanitizeFilename } from '../lib/mime.js';
 
 export const AddressSchema = z.object({
   name: z.string().max(200).default(''),
@@ -183,10 +183,11 @@ export class Outbox {
         const p = await openPart(acc, f.mailbox, f.uidValidity, f.uid, part);
         if (!p) continue;
         total += p.buf.length;
+        const ct = (p.meta?.contentType ?? '').toLowerCase();
         attachments.push({
-          filename: p.meta?.filename ?? `attachment-${part}`,
+          filename: sanitizeFilename(p.meta?.filename, `attachment-${part}`),
           content: p.buf, // download() already removed the transfer encoding
-          contentType: p.meta?.contentType ?? 'application/octet-stream',
+          contentType: /^[\w.+-]+\/[\w.+-]+$/.test(ct) ? ct : 'application/octet-stream',
         });
       }
     }

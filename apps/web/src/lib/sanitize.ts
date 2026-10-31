@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify';
+import { BASE } from '../api/client';
 
 /**
  * Untrusted mail HTML -> safe srcdoc for a sandboxed iframe.
@@ -54,20 +55,78 @@ function isTracker(url: URL, el?: Element): boolean {
   return tiny || TRACKER_HOSTS.some((r) => r.test(url.hostname)) || TRACKER_PATH.test(url.pathname + url.search);
 }
 
-function cleanCss(css: string, rewriteUrl: (u: string) => string | null): string {
-  return css
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/@import[^;]*;?/gi, '')
-    .replace(/@font-face\s*\{[^}]*\}/gi, '')
-    .replace(/@namespace[^;]*;?/gi, '')
-    .replace(/expression\s*\(/gi, 'x(')
-    .replace(/behavior\s*:/gi, 'x:')
-    .replace(/-moz-binding\s*:/gi, 'x:')
-    .replace(/position\s*:\s*fixed/gi, 'position:static')
-    .replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (_m, _q, u: string) => {
+const IMAGE_FN = /\b(url|image-set|-webkit-image-set|image|cross-fade|element|paint)\s*\(/i;
+const BANNED_PROP = /^(behavior|-moz-binding|-ms-behavior)$/i;
+const inertDoc = document.implementation.createHTMLDocument('');
+
+/**
+ * CSS is sanitised through the CSSOM: the browser parses (and unescapes) it, so tricks like
+ * `\75 rl(...)` or `image-set(...)` are seen for what they are. Any image-loading function is
+ * dropped unless every url() in it rewrites to a signed proxy URL. Rules that only apply on
+ * interaction or in @media / @supports (tracking vectors) never load anything.
+ */
+function cleanDecls(style: CSSStyleDeclaration, rewriteUrl: (u: string) => string | null, noLoads: boolean) {
+  for (const prop of [...style]) {
+    const value = style.getPropertyValue(prop);
+    if (BANNED_PROP.test(prop) || /expression\s*\(/i.test(value)) {
+      style.removeProperty(prop);
+      continue;
+    }
+    if (prop === 'position' && /fixed|sticky/i.test(value)) {
+      style.setProperty(prop, 'static');
+      continue;
+    }
+    if (!IMAGE_FN.test(value)) continue;
+    const onlyUrls = !/\b(image-set|-webkit-image-set|image|cross-fade|element|paint)\s*\(/i.test(value);
+    if (noLoads || !onlyUrls) {
+      style.removeProperty(prop);
+      continue;
+    }
+    let ok = true;
+    const rewritten = value.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (_m, _q, u: string) => {
       const r = rewriteUrl(u.trim());
+      if (!r) ok = false;
       return r ? `url("${r.replace(/"/g, '%22')}")` : 'none';
     });
+    if (ok && !IMAGE_FN.test(rewritten.replace(/url\("[^"]*"\)/g, ''))) style.setProperty(prop, rewritten, style.getPropertyPriority(prop));
+    else style.removeProperty(prop);
+  }
+}
+
+function cleanRules(rules: CSSRuleList, rewriteUrl: (u: string) => string | null, noLoads: boolean): string {
+  const out: string[] = [];
+  for (const rule of [...rules]) {
+    if (rule instanceof CSSStyleRule) {
+      const interactive = /:(hover|active|focus|focus-within|visited|target|checked)/i.test(rule.selectorText);
+      cleanDecls(rule.style, rewriteUrl, noLoads || interactive);
+      if (rule.style.length) out.push(rule.cssText);
+    } else if (rule instanceof CSSMediaRule || rule instanceof CSSSupportsRule) {
+      const inner = cleanRules(rule.cssRules, rewriteUrl, true);
+      if (inner) out.push(`${rule instanceof CSSMediaRule ? `@media ${rule.conditionText}` : `@supports ${rule.conditionText}`} {${inner}}`);
+    } else if (rule instanceof CSSKeyframesRule) {
+      for (const k of [...rule.cssRules]) if (k instanceof CSSKeyframeRule) cleanDecls(k.style, rewriteUrl, true);
+      out.push(rule.cssText);
+    }
+    // @import, @font-face, @namespace, @layer, @page and anything unknown are dropped.
+  }
+  return out.join('\n');
+}
+
+function cleanStylesheet(css: string, rewriteUrl: (u: string) => string | null): string {
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css.replace(/@import[^;]*;?/gi, ''));
+    return cleanRules(sheet.cssRules, rewriteUrl, false);
+  } catch {
+    return '';
+  }
+}
+
+function cleanStyleAttr(css: string, rewriteUrl: (u: string) => string | null): string {
+  const el = inertDoc.createElement('div');
+  el.setAttribute('style', css);
+  cleanDecls(el.style, rewriteUrl, false);
+  return el.style.cssText;
 }
 
 export function sanitizeEmail(html: string, opts: SanitizeOptions): SanitizeResult {
@@ -103,12 +162,14 @@ export function sanitizeEmail(html: string, opts: SanitizeOptions): SanitizeResu
 
   const purify = DOMPurify();
   purify.addHook('uponSanitizeElement', (node, data) => {
-    if (data.tagName === 'style' && node.textContent) node.textContent = cleanCss(node.textContent, (u) => rewriteImg(u));
+    if (data.tagName === 'style' && node.textContent) node.textContent = cleanStylesheet(node.textContent, (u) => rewriteImg(u));
   });
   purify.addHook('afterSanitizeAttributes', (node) => {
     const el = node as Element;
     if (el.hasAttribute('style')) {
-      el.setAttribute('style', cleanCss(el.getAttribute('style') ?? '', (u) => rewriteImg(u, el)));
+      const cleaned = cleanStyleAttr(el.getAttribute('style') ?? '', (u) => rewriteImg(u, el));
+      if (cleaned) el.setAttribute('style', cleaned);
+      else el.removeAttribute('style');
     }
     if (el.hasAttribute('background')) {
       const r = rewriteImg(el.getAttribute('background') ?? '', el);
@@ -182,7 +243,8 @@ export function sanitizeEmail(html: string, opts: SanitizeOptions): SanitizeResu
   });
   const hasOwnColors = /\b(bgcolor|background(-color)?\s*:|color\s*:)/i.test(body);
 
-  const imgSrc = opts.allowImages ? "data: blob: 'self'" : 'data: blob:';
+  // With images allowed, only the signed proxy endpoint is reachable — never the rest of our API.
+  const imgSrc = opts.allowImages ? `data: blob: ${location.origin}${BASE}/api/proxy/img` : 'data: blob:';
   const csp = `default-src 'none'; script-src 'none'; object-src 'none'; style-src 'unsafe-inline'; img-src ${imgSrc}; font-src data:; media-src 'none'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'`;
 
   const t = opts.theme;

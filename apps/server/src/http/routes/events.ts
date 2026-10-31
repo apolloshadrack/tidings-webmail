@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Account, ServerEvent } from '../../imap/account.js';
 import { type App, accountFor, requireSession, sendError } from '../context.js';
+import { syncMailbox } from '../../imap/sync.js';
 
 /**
  * Server-Sent Events: one stream per browser (the client elects a leader tab), fan-out per user.
@@ -8,6 +9,12 @@ import { type App, accountFor, requireSession, sendError } from '../context.js';
  */
 export function eventRoutes(f: FastifyInstance, app: App) {
   const perSession = new Map<string, number>();
+  const open = new Set<import('node:http').ServerResponse>();
+  // On shutdown, end every stream so browsers reconnect promptly to the next process.
+  f.addHook('preClose', async () => {
+    for (const r of open) r.end();
+    open.clear();
+  });
 
   f.get('/api/events', async (req, reply) => {
     let acc: Account;
@@ -25,6 +32,7 @@ export function eventRoutes(f: FastifyInstance, app: App) {
 
     reply.hijack();
     const res = reply.raw;
+    open.add(res);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store',
@@ -41,6 +49,8 @@ export function eventRoutes(f: FastifyInstance, app: App) {
     send({ type: n > 1 ? 'resync' : 'mailboxes' });
     acc.on('event', send);
     acc.addListener_();
+    // Catch up on anything that arrived while this browser was disconnected.
+    void syncMailbox(acc, app.db, 'INBOX', 5).catch(() => undefined);
 
     const beat = setInterval(() => {
       if (!app.sessions.get(session.token, false)) {
@@ -48,10 +58,12 @@ export function eventRoutes(f: FastifyInstance, app: App) {
         res.end();
         return;
       }
-      res.write(`: hb ${Date.now()}\n\n`);
+      // A real event (not a comment) so clients can detect a silently dead connection.
+      res.write(`event: ping\ndata: ${Date.now()}\n\n`);
     }, 20_000);
 
     const cleanup = () => {
+      open.delete(res);
       clearInterval(beat);
       acc.off('event', send);
       acc.removeListener_();

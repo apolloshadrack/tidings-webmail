@@ -1,0 +1,9 @@
+[tidings]
+enabled  = true
+port     = http,https
+filter   = tidings
+# Point this at wherever your container logs go, e.g. a journald unit or a docker log file.
+logpath  = /var/log/tidings/tidings.log
+maxretry = 8
+findtime = 10m
+bantime  = 1h

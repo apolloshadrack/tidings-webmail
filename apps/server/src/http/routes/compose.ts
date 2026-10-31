@@ -90,8 +90,16 @@ export function composeRoutes(f: FastifyInstance, app: App) {
             return [];
           }
         });
+      const allowed = allowedFromAddresses(app.cfg, app.db, s.userKey, s.username);
+      let draftFrom = loginAddress(app.cfg, s.username);
+      try {
+        const f = d.from ? normalizeAddress(d.from) : draftFrom;
+        if (allowed === 'any' || allowed.has(f)) draftFrom = f;
+      } catch {
+        /* keep the login address */
+      }
       const raw = await new MailComposer({
-        from: d.from ? { name: '', address: d.from } : loginAddress(app.cfg, s.username),
+        from: draftFrom,
         to: addrs(d.to),
         cc: addrs(d.cc),
         bcc: addrs(d.bcc),
@@ -238,18 +246,23 @@ export function composeRoutes(f: FastifyInstance, app: App) {
       const like = `%${q}%`;
       const contacts = app.db
         .prepare(
-          `SELECT name, email, use_count, last_used, source FROM contacts WHERE user_key = ? AND (lower(email) LIKE ? OR lower(name) LIKE ?)
-           ORDER BY (CASE source WHEN 'sent' THEN 3 WHEN 'manual' THEN 2 ELSE 1 END) * (use_count + 1) DESC, last_used DESC LIMIT 8`,
+          `SELECT name, email, use_count, last_used, source,
+             CASE WHEN lower(name) LIKE ? OR lower(email) LIKE ? THEN 0
+                  WHEN lower(name) LIKE ? THEN 1 ELSE 2 END AS match_rank
+           FROM contacts WHERE user_key = ? AND (lower(email) LIKE ? OR lower(name) LIKE ?)
+           ORDER BY match_rank, (CASE source WHEN 'sent' THEN 3 WHEN 'manual' THEN 2 ELSE 1 END) * (use_count + 1) DESC, last_used DESC LIMIT 8`,
         )
-        .all(s.userKey, like, like) as { name: string; email: string }[];
+        .all(`${q}%`, `${q}%`, `% ${q}%`, s.userKey, like, like) as { name: string; email: string }[];
       const seen = new Set(contacts.map((c) => c.email));
       const fromIndex = q.length >= 2
         ? (app.db
             .prepare(
-              `SELECT from_name name, from_addr email, COUNT(*) n FROM messages WHERE user_key = ? AND (lower(from_addr) LIKE ? OR lower(from_name) LIKE ?)
-               AND list_unsubscribe IS NULL AND from_addr != '' GROUP BY from_addr ORDER BY n DESC LIMIT 8`,
+              `SELECT from_name name, from_addr email, COUNT(*) n, MAX(date) last,
+                 CASE WHEN lower(from_name) LIKE ? OR lower(from_addr) LIKE ? THEN 0 WHEN lower(from_name) LIKE ? THEN 1 ELSE 2 END AS match_rank
+               FROM messages WHERE user_key = ? AND (lower(from_addr) LIKE ? OR lower(from_name) LIKE ?)
+               AND list_unsubscribe IS NULL AND from_addr != '' GROUP BY from_addr ORDER BY match_rank, last DESC, n DESC LIMIT 8`,
             )
-            .all(s.userKey, like, like) as { name: string; email: string }[])
+            .all(`${q}%`, `${q}%`, `% ${q}%`, s.userKey, like, like) as { name: string; email: string }[])
         : [];
       const out = [...contacts, ...fromIndex.filter((c) => !seen.has(c.email))].slice(0, 8).map((c) => ({ name: c.name, address: c.email }));
       return { suggestions: out };

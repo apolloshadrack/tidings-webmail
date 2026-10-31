@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Command, Menu as MenuIcon, Search, WifiOff, X, Send } from 'lucide-react';
+import { Menu as MenuIcon, Palmtree, Search, WifiOff, X, Send } from 'lucide-react';
 import { api, qs } from '../api/client';
 import type { Address, SessionInfo } from '../api/types';
 import { MOD } from '../lib/keys';
 import { useOutbox } from '../state/queries';
+import { useQuery } from '@tanstack/react-query';
 import { useUi } from '../state/ui';
 
 const OPERATORS = [
@@ -43,6 +44,17 @@ export function Topbar({ session }: { session: SessionInfo }) {
   const focusTick = useUi((s) => s.searchFocused);
   const online = useUi((s) => s.online);
   const outbox = useOutbox();
+  const dialog = useUi((s) => s.dialog);
+  const vacation = useQuery({
+    queryKey: ['sieve-status'],
+    queryFn: () => api<{ available: boolean; model?: { vacation: { enabled: boolean; until?: number } } }>('/api/sieve'),
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+  useEffect(() => {
+    if (!dialog) void vacation.refetch();
+  }, [dialog]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vacationOn = !!vacation.data?.model?.vacation.enabled && (!vacation.data.model.vacation.until || vacation.data.model.vacation.until > Date.now());
   const queued = (outbox.data ?? []).filter((o) => o.state === 'queued' || o.state === 'sending').length;
   const failed = (outbox.data ?? []).filter((o) => o.state === 'failed' || o.state === 'stalled').length;
   const [q, setQ] = useState(view.kind === 'search' ? view.q : '');
@@ -58,6 +70,8 @@ export function Topbar({ session }: { session: SessionInfo }) {
     }
   }, [focusTick]);
   useEffect(() => {
+    // Don't clobber what the user is typing when a live search updates the view.
+    if (document.activeElement === input.current && view.kind === 'search') return;
     setQ(view.kind === 'search' ? view.q : '');
   }, [view]);
 
@@ -102,6 +116,18 @@ export function Topbar({ session }: { session: SessionInfo }) {
     return out;
   }, [q, people, lastToken, personPrefix]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Results as you type (the local index answers in milliseconds).
+  useEffect(() => {
+    const t = q.trim();
+    if (!focused || t.length < 2 || /:$/.test(t)) return;
+    const timer = setTimeout(() => {
+      const cur = useUi.getState().view;
+      if (cur.kind === 'search' && cur.q === t) return;
+      setView({ kind: 'search', q: t });
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [q, focused]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function run(text: string) {
     const t = text.trim();
     if (!t) return;
@@ -134,12 +160,13 @@ export function Topbar({ session }: { session: SessionInfo }) {
             } else if (e.key === 'ArrowUp' && options.length) {
               e.preventDefault();
               setActive((a) => (a - 1 + options.length) % options.length);
-            } else if (e.key === 'Tab' && focused && options[active] && (personPrefix || (lastToken && !lastToken.includes(':')))) {
+            } else if (e.key === 'Tab' && !e.shiftKey && focused && options[active] && (personPrefix || (lastToken && !lastToken.includes(':')))) {
               e.preventDefault();
               options[active].apply();
             } else if (e.key === 'Enter') {
+              // Enter always searches what you typed; Tab completes a suggestion.
               e.preventDefault();
-              if (focused && options[active] && (personPrefix || (!q.trim() && options.length))) options[active].apply();
+              if (!q.trim() && options[active]) options[active].apply();
               else run(q);
             } else if (e.key === 'Escape') {
               e.preventDefault();
@@ -192,13 +219,18 @@ export function Topbar({ session }: { session: SessionInfo }) {
           <WifiOff size={14} /> Offline
         </span>
       )}
+      {vacationOn && (
+        <button className="offline-pill" style={{ border: 0, cursor: 'pointer', background: 'var(--accent-soft)', color: 'var(--text)' }} onClick={() => useUi.getState().setDialog({ kind: 'settings', tab: 'filters' })}>
+          <Palmtree size={14} /> Vacation reply on
+        </button>
+      )}
       {(queued > 0 || failed > 0) && (
         <button className="btn sm ghost" onClick={() => setView({ kind: 'outbox' })} style={failed ? { color: 'var(--danger)' } : undefined}>
           <Send size={14} /> {failed ? `${failed} not sent` : `Sending ${queued}…`}
         </button>
       )}
       <button className="btn sm ghost" onClick={() => useUi.getState().setDialog({ kind: 'palette' })} title="Command palette">
-        <Command size={14} /> <span className="kbd" style={{ boxShadow: 'none', background: 'transparent' }}>{MOD}K</span>
+        <kbd>{MOD}K</kbd>
       </button>
     </header>
   );
