@@ -24,7 +24,7 @@
     "test:e2e": "node scripts/e2e.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2",
+    "concurrently": "^10.0.6",
     "smtp-server": "^3.21.3"
   }
 }
